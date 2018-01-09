@@ -23,7 +23,7 @@ pub struct Container {
     pub NetworkSettings: json::Value,
     pub Names: Vec<String>,
     pub Ports: Vec<Port>,
-    pub Status: String
+    pub Status: String,
 }
 
 pub struct Containers(pub Box<Future<Item = Vec<Container>, Error = hyper::Error> + 'static>);
@@ -38,22 +38,34 @@ impl Future for Containers {
 }
 
 impl Containers {
-    pub fn from_client<T: Connect + Clone>(client: Docker<T>)
-        -> Box<Future<Item = (Docker<T>, Vec<Container>), Error = (Docker<T>, hyper::Error)>> {
+    pub fn from_client<T: Connect + Clone>(
+        client: Docker<T>,
+    ) -> Box<Future<Item = (Docker<T>, Vec<Container>), Error = (Docker<T>, hyper::Error)>> {
         let clone = client.clone();
-        let containers = client.containers().and_then(|resp| Ok((client, resp)))
-                                    .or_else(move |err| Err((clone, err)));
+        let containers = client
+            .containers()
+            .and_then(|resp| Ok((client, resp)))
+            .or_else(move |err| Err((clone, err)));
         Box::new(containers)
     }
 
-    pub fn create_container_with<T>(client: Docker<T>, container_builder: ContainerBuilder)
-            -> Box<Future<Item = (Docker<T>, json::Map<String, json::Value>),
-                          Error = (Docker<T>, hyper::Error)>>
-            where T: Connect + Clone {
+    pub fn create_container_with<T>(
+        client: Docker<T>,
+        container_builder: ContainerBuilder,
+    ) -> Box<
+        Future<
+            Item = (Docker<T>, json::Map<String, json::Value>),
+            Error = (Docker<T>, hyper::Error),
+        >,
+    >
+    where
+        T: Connect + Clone,
+    {
         let clone = client.clone();
-        let container = client.create_container(container_builder)
-                              .map_err(|e| (clone, e))
-                              .and_then(|progress| Ok((client, progress)));
+        let container = client
+            .create_container(container_builder)
+            .map_err(|e| (clone, e))
+            .and_then(|progress| Ok((client, progress)));
         Box::new(container)
     }
 }
@@ -61,7 +73,7 @@ impl Containers {
 pub struct ContainerBuilder {
     params: HashMap<String, String>,
     body: Map<String, json::Value>,
-    headers: Headers
+    headers: Headers,
 }
 
 impl ContainerBuilder {
@@ -69,7 +81,7 @@ impl ContainerBuilder {
         ContainerBuilder {
             params: HashMap::new(),
             body: Map::new(),
-            headers: Headers::new()
+            headers: Headers::new(),
         }
     }
 
@@ -101,7 +113,9 @@ impl ContainerBuilder {
     }
 
     pub fn build(self) -> Result<Request, hyper::Error> {
-        let params = FormEncoder::new(String::new()).extend_pairs(self.params).finish();
+        let params = FormEncoder::new(String::new())
+            .extend_pairs(self.params)
+            .finish();
         let mut uri = String::from("/v1.30/containers/create");
         if !params.is_empty() {
             uri.push_str(&"?");
@@ -117,4 +131,3 @@ impl ContainerBuilder {
         Ok(req)
     }
 }
-

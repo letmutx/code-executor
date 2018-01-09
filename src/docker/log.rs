@@ -9,24 +9,24 @@ use futures::{Future, Stream, Poll, Async};
 pub struct LogMessage {
     body: Body,
     state: State,
-    bytes: BytesMut
+    bytes: BytesMut,
 }
 
 enum State {
     Head,
-    Body(u32)
+    Body(u32),
 }
 
 #[derive(Debug, PartialEq)]
 enum LogType {
     Stdout,
     Stdin,
-    Stderr
+    Stderr,
 }
 
 struct Header {
     pub log_type: LogType,
-    pub size: u32
+    pub size: u32,
 }
 
 impl Header {
@@ -35,12 +35,12 @@ impl Header {
             0u8 => LogType::Stdin,
             1u8 => LogType::Stdout,
             2u8 => LogType::Stderr,
-            _ => panic!()
+            _ => panic!(),
         };
         let size = BigEndian::read_u32(&bytes[4..]);
         Header {
             log_type: log_type,
-            size: size
+            size: size,
         }
     }
 }
@@ -50,14 +50,14 @@ impl LogMessage {
         LogMessage {
             body: body,
             state: State::Head,
-            bytes: BytesMut::with_capacity(64)
+            bytes: BytesMut::with_capacity(64),
         }
     }
 
     fn can_read_head(&self) -> bool {
         match self.state {
             State::Head if self.bytes.len() >= 8 => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -66,15 +66,15 @@ impl LogMessage {
             State::Head => {
                 let bytes = self.bytes.split_to(8);
                 Some(Header::new(&bytes))
-            },
-            _ => None
+            }
+            _ => None,
         }
     }
 
     fn can_read_body(&self) -> bool {
         match self.state {
             State::Body(size) if self.bytes.len() >= size as usize => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -84,8 +84,8 @@ impl LogMessage {
                 let bytes = self.bytes.split_to(size as usize);
                 let body = String::from_utf8(bytes.to_vec()).unwrap();
                 Some(body)
-            },
-            _ => panic!()
+            }
+            _ => unreachable!(),
         }
     }
 }
@@ -119,15 +119,13 @@ impl Stream for LogMessage {
                 if self.can_read_body() {
                     if let Some(body) = self.read_body() {
                         (*self).state = State::Head;
-                        return Ok(Async::Ready(Some(body)))
+                        return Ok(Async::Ready(Some(body)));
                     }
                 }
                 Ok(Async::NotReady)
-            },
-            Ok(Async::Ready(None)) => {
-                Ok(Async::Ready(None))
-            },
-            Err(e) => Err(e)
+            }
+            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
+            Err(e) => Err(e),
         }
     }
 }
@@ -153,4 +151,3 @@ mod tests {
         // TODO complete test
     }
 }
-

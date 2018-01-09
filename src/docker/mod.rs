@@ -45,7 +45,7 @@ mod tests {
     use docker::container::ContainerBuilder;
     use hyper::header::ContentType;
     use std::fs::{self, File};
-    use futures::{Future, Stream, self};
+    use futures::{self, Future, Stream};
     use std::path::Path;
     use tar::{Builder, Header};
     use json;
@@ -98,13 +98,15 @@ mod tests {
         let tar = make_tar();
         let builder = ImageBuilder::new().with_body(tar).with_param("q", "true");
         let stream = docker.create_image_quiet(builder);
-        let run = stream.and_then(|progress| {
+        let run = stream
+            .and_then(|progress| {
                 assert!(progress.get("stream").is_some());
                 Ok(())
-        }).or_else(|err| {
-            println!("{:?}", err);
-            futures::future::err(())
-        });
+            })
+            .or_else(|err| {
+                println!("{:?}", err);
+                futures::future::err(())
+            });
         core.run(run).unwrap();
     }
 
@@ -115,15 +117,15 @@ mod tests {
         let tar = make_tar();
         let builder = ImageBuilder::new().with_body(tar).with_param("q", "true");
         let stream = docker.create_image(builder);
-        let run = stream.and_then(|progress| {
-            progress.for_each(|msg| {
-                let js = json::to_string(&msg.unwrap()).unwrap();
-                let id: json::Map<String, json::Value> = json::from_str(&js).unwrap();
-                futures::future::ok(())
+        let run = stream
+            .and_then(|progress| {
+                progress.for_each(|msg| {
+                    let js = json::to_string(&msg.unwrap()).unwrap();
+                    let id: json::Map<String, json::Value> = json::from_str(&js).unwrap();
+                    futures::future::ok(())
+                })
             })
-        }).or_else(|err| {
-            futures::future::err(())
-        });
+            .or_else(|err| futures::future::err(()));
         core.run(run).unwrap();
     }
 
@@ -132,7 +134,8 @@ mod tests {
         // delete container before running test
         let mut core = Core::new().unwrap();
         let docker = Docker::<UnixConnector>::new(core.handle());
-        let map: json::Map<String, json::Value> = json::from_str(r#"{"Image": "hello-world:latest", "Command": ["/hello"]}"#).unwrap();
+        let map: json::Map<String, json::Value> =
+            json::from_str(r#"{"Image": "hello-world:latest", "Command": ["/hello"]}"#).unwrap();
         let mut builder = ContainerBuilder::new().with_body(map);
         builder.set_param("name", "mycontainer");
         builder.set_header(ContentType::json());
@@ -145,8 +148,12 @@ mod tests {
         let mut builder = Builder::new(Vec::new());
         let mut dockerfile = File::open(DOCKERFILE).unwrap();
         let mut hello_world = File::open(HELLO_WORLD).unwrap();
-        builder.append_file(Path::new("Dockerfile"), &mut dockerfile).unwrap();
-        builder.append_file(Path::new("hello.c"), &mut hello_world).unwrap();
+        builder
+            .append_file(Path::new("Dockerfile"), &mut dockerfile)
+            .unwrap();
+        builder
+            .append_file(Path::new("hello.c"), &mut hello_world)
+            .unwrap();
         builder.into_inner().unwrap()
     }
 
@@ -158,15 +165,17 @@ mod tests {
         let tar = make_tar();
         let builder = ImageBuilder::new().with_body(tar).with_param("q", "true");
         let images = Images::create_image_with(docker, builder);
-        let chain = images.and_then(|(docker, progress)| {
-            progress.for_each(|msg| {
-                let js = json::to_string(&msg.unwrap()).unwrap();
-                let id: json::Map<String, json::Value> = json::from_str(&js).unwrap();
-                futures::future::ok(())
-            }).map_err(|e| (docker, e))
-        }).or_else(|(_, err)| {
-            futures::future::err(err)
-        });
+        let chain = images
+            .and_then(|(docker, progress)| {
+                progress
+                    .for_each(|msg| {
+                        let js = json::to_string(&msg.unwrap()).unwrap();
+                        let id: json::Map<String, json::Value> = json::from_str(&js).unwrap();
+                        futures::future::ok(())
+                    })
+                    .map_err(|e| (docker, e))
+            })
+            .or_else(|(_, err)| futures::future::err(err));
         core.run(chain).unwrap();
     }
 
@@ -174,11 +183,14 @@ mod tests {
     // fn test_container_start() {
     //     let mut core = Core::new().unwrap();
     //     let docker = Docker::<UnixConnector>::new(core.handle());
-    //     let map: json::Map<String, json::Value> = json::from_str(r#"{"Image": "hello-world:latest", "Command": ["/hello"]}"#).unwrap();
+    //     let map: json::Map<String, json::Value> = json::from_str(
+    //		r#"{"Image": "hello-world:latest", "Command": ["/hello"]}"#
+    //	   ).unwrap();
     //     let mut builder = ContainerBuilder::new().with_body(map);
     //     builder.set_param("name", "mycontainer");
     //     builder.set_header(ContentType::json());
-    //     let container = Containers::create_container_with(docker, builder).and_then(|(docker, container)| {
+    //     let container = Containers::create_container_with(docker, builder)
+    //		.and_then(|(docker, container)| {
     //         let id = container.get("Id").unwrap();
     //         docker.start_container(id).map(|_| id)
     //     });
@@ -193,10 +205,12 @@ mod tests {
         let mut core = Core::new().unwrap();
         let docker = Docker::<UnixConnector>::new(core.handle());
         let logs = docker.logs("3901a37be11c").and_then(move |stream| {
-            stream.map_err(|_| hyper::Error::Incomplete).for_each(|message| {
-                println!("{}", message);
-                futures::future::ok(())
-            })
+            stream.map_err(|_| hyper::Error::Incomplete).for_each(
+                |message| {
+                    println!("{}", message);
+                    futures::future::ok(())
+                },
+            )
         });
         let logs = core.run(logs).unwrap();
     }
