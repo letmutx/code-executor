@@ -34,45 +34,37 @@ pub struct Image {
 pub struct Images(pub Box<Future<Item = Vec<Image>, Error = hyper::Error> + 'static>);
 
 impl Images {
-    pub fn from_client<T: Connect + Clone>(
-        client: Docker<T>,
-    ) -> Box<Future<Item = (Docker<T>, Vec<Image>), Error = (Docker<T>, hyper::Error)>> {
+    pub fn from_client<T: Connect + Clone>
+        (client: Docker<T>)
+         -> Box<Future<Item = (Docker<T>, Vec<Image>), Error = (Docker<T>, hyper::Error)>> {
         let clone = client.clone();
-        let images = client
-            .images()
+        let images = client.images()
             .and_then(|resp| Ok((client, resp)))
             .or_else(move |err| Err((clone, err)));
         Box::new(images)
     }
 
-    pub fn create_image_with<T: Connect + Clone, B: Into<hyper::Body>>(
-        client: Docker<T>,
-        image_builder: ImageBuilder<B>,
-    ) -> Box<Future<Item = (Docker<T>, BuildMessage), Error = (Docker<T>, hyper::Error)>> {
+    pub fn create_image_with<T: Connect + Clone, B: Into<hyper::Body>>
+        (client: Docker<T>,
+         image_builder: ImageBuilder<B>)
+         -> Box<Future<Item = (Docker<T>, BuildMessage), Error = (Docker<T>, hyper::Error)>> {
         let clone = client.clone();
-        let image = client
-            .create_image(image_builder)
+        let image = client.create_image(image_builder)
             .map_err(|e| (clone, e))
             .and_then(|progress| Ok((client, progress)));
         Box::new(image)
     }
 
-    pub fn create_image_quietly_with<T, B>(
-        client: Docker<T>,
-        image_builder: ImageBuilder<B>,
-    ) -> Box<
-        Future<
-            Item = (Docker<T>, json::Map<String, json::Value>),
-            Error = (Docker<T>, hyper::Error),
-        >,
-    >
-    where
-        T: Connect + Clone,
-        B: Into<hyper::Body>,
+    pub fn create_image_quietly_with<T, B>(client: Docker<T>,
+                                           image_builder: ImageBuilder<B>)
+                                           -> Box<Future<Item = (Docker<T>,
+                                                                 json::Map<String, json::Value>),
+                                                         Error = (Docker<T>, hyper::Error)>>
+        where T: Connect + Clone,
+              B: Into<hyper::Body>
     {
         let clone = client.clone();
-        let image = client
-            .create_image_quiet(image_builder)
+        let image = client.create_image_quiet(image_builder)
             .map_err(|e| (clone, e))
             .and_then(|progress| Ok((client, progress)));
         Box::new(image)

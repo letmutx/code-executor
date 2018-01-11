@@ -30,11 +30,9 @@ impl<C: Connect> Docker<C> {
     pub fn images(&self) -> Images {
         let uri = Uri::new("/var/run/docker.sock", "/v1.30/images/json");
         let mut request = Request::new(Method::Get, uri.into());
-        let result = self.client.request(request).and_then(|resp| {
-            resp.body().concat2().map(|chunk| {
-                json::from_slice(&chunk).unwrap()
-            })
-        });
+        let result = self.client
+            .request(request)
+            .and_then(|resp| resp.body().concat2().map(|chunk| json::from_slice(&chunk).unwrap()));
 
         Images(Box::new(result))
     }
@@ -46,17 +44,16 @@ impl<C: Connect> Docker<C> {
             Err(e) => return Progress(Box::new(future::err(hyper::Error::Incomplete))),
         }
         let request = request.unwrap();
-        let image_progress = self.client.request(request).and_then(|resp| {
-            Ok(BuildMessage::new(resp.body()))
-        });
+        let image_progress =
+            self.client.request(request).and_then(|resp| Ok(BuildMessage::new(resp.body())));
 
         Progress(Box::new(image_progress))
     }
 
-    pub fn create_image_quiet<T: Into<hyper::Body>>(
-        &self,
-        mut image: ImageBuilder<T>,
-    ) -> Box<Future<Item = json::Map<String, json::Value>, Error = hyper::Error>> {
+    pub fn create_image_quiet<T: Into<hyper::Body>>
+        (&self,
+         mut image: ImageBuilder<T>)
+         -> Box<Future<Item = json::Map<String, json::Value>, Error = hyper::Error>> {
         image.set_param("q", "true");
         let request = image.build();
         match request {
@@ -74,21 +71,19 @@ impl<C: Connect> Docker<C> {
         Box::new(json)
     }
 
-    pub fn create_container(
-        &self,
-        container: ContainerBuilder,
-    ) -> Box<Future<Item = json::Map<String, json::Value>, Error = hyper::Error>> {
+    pub fn create_container
+        (&self,
+         container: ContainerBuilder)
+         -> Box<Future<Item = json::Map<String, json::Value>, Error = hyper::Error>> {
         let request = container.build();
         match request {
             Ok(_) => (),
             Err(e) => return Box::new(future::err(hyper::Error::Incomplete)),
         }
         let request = request.unwrap();
-        let container = self.client.request(request).and_then(|resp| {
-            resp.body().concat2().map(|chunk| {
-                json::from_slice(&chunk).unwrap()
-            })
-        });
+        let container = self.client
+            .request(request)
+            .and_then(|resp| resp.body().concat2().map(|chunk| json::from_slice(&chunk).unwrap()));
 
         Box::new(container)
     }
@@ -99,12 +94,10 @@ impl<C: Connect> Docker<C> {
         let uri = Uri::new("/var/run/docker.sock", &url);
         let request = Request::new(Method::Post, uri.into());
 
-        let resp = self.client.request(request).and_then(
-            |resp| match resp.status() {
-                StatusCode::NoContent => Ok(()),
-                _ => panic!(),
-            },
-        );
+        let resp = self.client.request(request).and_then(|resp| match resp.status() {
+            StatusCode::NoContent => Ok(()),
+            _ => panic!(),
+        });
 
         Box::new(resp)
     }
@@ -112,25 +105,19 @@ impl<C: Connect> Docker<C> {
     pub fn containers(&self) -> Containers {
         let uri = Uri::new("/var/run/docker.sock", "/v1.30/containers/json");
         let mut request = Request::new(Method::Get, uri.into());
-        let result = self.client.request(request).and_then(|resp| {
-            resp.body().concat2().map(|chunk| {
-                json::from_slice(&chunk).unwrap()
-            })
-        });
+        let result = self.client
+            .request(request)
+            .and_then(|resp| resp.body().concat2().map(|chunk| json::from_slice(&chunk).unwrap()));
 
         Containers(Box::new(result))
     }
 
     pub fn logs(&self, container_id: &str) -> Logs {
-        let url = format!(
-            "/v1.30/containers/{}/logs?follow=true&stdout=true",
-            container_id
-        );
+        let url = format!("/v1.30/containers/{}/logs?follow=true&stdout=true",
+                          container_id);
         let uri = Uri::new("/var/run/docker.sock", &url);
         let request = Request::new(Method::Get, uri.into());
-        let result = self.client.request(request).and_then(|resp| {
-            Ok(LogMessage::new(resp.body()))
-        });
+        let result = self.client.request(request).and_then(|resp| Ok(LogMessage::new(resp.body())));
 
         Logs(Box::new(result))
     }

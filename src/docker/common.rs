@@ -32,8 +32,7 @@ impl<'de> Visitor<'de> for TagVisitor {
 
 impl Serialize for Tag {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where S: Serializer
     {
         if self.repository.len() == 0 && self.tag.len() == 0 {
             serializer.serialize_str(&"")
@@ -73,8 +72,7 @@ impl<'de> Visitor<'de> for IdVisitor {
 }
 
 fn split_at_colon<'a, T>(s: &'a str) -> Result<T, ()>
-where
-    T: From<(&'a str, &'a str)>,
+    where T: From<(&'a str, &'a str)>
 {
     let index = s.find(|c| c == ':');
     match index {
@@ -91,8 +89,7 @@ where
 
 impl Serialize for Id {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where S: Serializer
     {
         if self.encoding.len() == 0 && self.hash.len() == 0 {
             serializer.serialize_str(&"")
@@ -105,8 +102,7 @@ impl Serialize for Id {
 
 impl<'de> Deserialize<'de> for Id {
     fn deserialize<D>(deserializer: D) -> Result<Id, D::Error>
-    where
-        D: Deserializer<'de>,
+        where D: Deserializer<'de>
     {
         deserializer.deserialize_str(IdVisitor)
     }
@@ -114,8 +110,7 @@ impl<'de> Deserialize<'de> for Id {
 
 impl<'de> Deserialize<'de> for Tag {
     fn deserialize<D>(deserializer: D) -> Result<Tag, D::Error>
-    where
-        D: Deserializer<'de>,
+        where D: Deserializer<'de>
     {
         deserializer.deserialize_str(TagVisitor)
     }

@@ -38,32 +38,25 @@ impl Future for Containers {
 }
 
 impl Containers {
-    pub fn from_client<T: Connect + Clone>(
-        client: Docker<T>,
-    ) -> Box<Future<Item = (Docker<T>, Vec<Container>), Error = (Docker<T>, hyper::Error)>> {
+    pub fn from_client<T: Connect + Clone>
+        (client: Docker<T>)
+         -> Box<Future<Item = (Docker<T>, Vec<Container>), Error = (Docker<T>, hyper::Error)>> {
         let clone = client.clone();
-        let containers = client
-            .containers()
+        let containers = client.containers()
             .and_then(|resp| Ok((client, resp)))
             .or_else(move |err| Err((clone, err)));
         Box::new(containers)
     }
 
-    pub fn create_container_with<T>(
-        client: Docker<T>,
-        container_builder: ContainerBuilder,
-    ) -> Box<
-        Future<
-            Item = (Docker<T>, json::Map<String, json::Value>),
-            Error = (Docker<T>, hyper::Error),
-        >,
-    >
-    where
-        T: Connect + Clone,
+    pub fn create_container_with<T>(client: Docker<T>,
+                                    container_builder: ContainerBuilder)
+                                    -> Box<Future<Item = (Docker<T>,
+                                                          json::Map<String, json::Value>),
+                                                  Error = (Docker<T>, hyper::Error)>>
+        where T: Connect + Clone
     {
         let clone = client.clone();
-        let container = client
-            .create_container(container_builder)
+        let container = client.create_container(container_builder)
             .map_err(|e| (clone, e))
             .and_then(|progress| Ok((client, progress)));
         Box::new(container)
