@@ -68,177 +68,108 @@ impl Submission {
         header.set_path("code.c");
         header.set_size(self.code.bytes().len() as u64);
         header.set_cksum();
-        builder.append_file(
-            Path::new("Dockerfile"),
-            &mut dockerfile,
-        )?;
+        builder.append_file(Path::new("Dockerfile"), &mut dockerfile)?;
         builder.append(&header, self.code.as_bytes())?;
         let build = builder.into_inner()?;
         Ok(ImageBuilder::new().with_body(Body::from(build)))
     }
 }
 
-#[derive(Clone)]
-struct Executor<T: Connect + Clone> {
-    remote: Remote,
-    client: Docker<T>,
+type Stdin = String;
+type Stderr = String;
+
+#[derive(Serialize)]
+enum Output {
+    CompileError(String),
+    Output(i32, Stdin, Stderr),
+}
+
+enum ExecutionError {}
+
+struct Executor<T> {
+    docker: Docker<T>,
     pool: CpuPool,
 }
 
-type ExecutionFuture = Box<Future<Item = hyper::Response, Error = ExecutionError>>;
+impl<T: Connect + Clone> Service for Executor<T> {
+    type Request = Submission;
+    type Response = Output;
+    type Error = ExecutionError;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
-fn split_at_colon<'a, T>(s: &'a str) -> Result<T, ()>
-where
-    T: From<(&'a str, &'a str)>,
-{
-    let index = s.find(|c| c == ':');
-    match index {
-        Some(index) => {
-            let (first, rest) = s.split_at(index);
-            let second = rest.chars().nth(1).unwrap();
-            let c = rest.find(second);
-            let (_, rest) = rest.split_at(c.unwrap());
-            Ok(T::from((first, rest)))
-        }
-        None => Ok(T::from(("", ""))),
+    fn call(&self, _sub: Self::Request) -> Self::Future {
+        unimplemented!();
     }
 }
 
-enum ExecutionError {
-    CompileError(String),
-    RunTimeError,
-    InternalError,
+impl<T: Clone> Clone for Executor<T> {
+    fn clone(&self) -> Self {
+        Executor {
+            docker: self.docker.clone(),
+            pool: self.pool.clone(),
+        }
+    }
 }
 
-fn execute<T: Connect + Clone>(
-    docker: Docker<T>,
-    builder: ImageBuilder<Body>,
-) -> Box<Future<Item = String, Error = ExecutionError>> {
-    let image = Images::create_image_with(docker, builder);
-
-    let container = image.map_err(|_| ExecutionError::InternalError).and_then(
-        |(docker, build_steps)| {
-            let error_message_holder = Vec::new();
-            build_steps
-                .map(|msg| match msg {
-                    json::Value::Object(map) => map,
-                    _ => panic!(),
-                })
-                .fold(error_message_holder, |mut holder, map| {
-                    // TODO: something to extract compiler warning messages
-                    if map.contains_key("stream") {
-                        let message = match map.get("stream").unwrap() {
-                            &json::Value::String(val) => val,
-                            _ => panic!(),
-                        };
-                        if message.contains("Step") {
-                            error_message_holder = Vec::new();
-                        } else {
-                            error_message_holder.push(message.to_owned());
-                        }
-                    } else if map.contains_key("errorDetail") {
-                        let error_message = String::new();
-                        for message in error_message_holder.into_iter().skip(1) {
-                            error_message.push_str(&message);
-                        }
-                        return Err(ExecutionError::CompileError(error_message));
-                    }
-                    Ok(error_message_holder)
-                })
-                .and_then(|image_id| Ok(split_at_colon(&image_id[0]).unwrap().hash))
-                .and_then(|id| {
-                    let mut body = json::Map::new();
-                    body.insert("Image".to_owned(), json::Value::String(id));
-                    let mut builder = ContainerBuilder::new().with_body(body);
-                    builder.set_header(ContentType::json());
-
-                    let container = docker.create_container(builder);
-
-                    container
-                        .map_err(|_| ExecutionError::InternalError)
-                        .and_then(|map| {
-                            assert!(map.get("Id").is_some());
-                            let container_id = map.get("Id").unwrap().to_owned();
-                            if let json::Value::String(container_id) = container_id {
-                                docker
-                                    .start_container(&container_id)
-                                    .map_err(|_| ExecutionError::InternalError)
-                                    .and_then(|_| Ok((docker, container_id)))
-                            } else {
-                                panic!();
-                            }
-                        })
-                })
-        },
-    );
-
-    let logs = container.and_then(|(docker, container_id)| docker.logs(&container_id));
-
-    let progress = logs.and_then(move |stream| {
-        let output = String::new();
-        println!("stream:: here");
-        stream.map_err(|_| hyper::Error::Incomplete).fold(
-            output,
-            |mut output,
-             message| {
-                println!("here");
-                output.push_str(&message);
-                Ok::<_, hyper::Error>(output)
-            },
-        )
-    });
-
-    Box::new(progress)
+struct APIService<T> {
+    executor: T,
 }
 
-fn send_request<T: Connect + Clone>(executor: Executor<T>, req: hyper::Request) -> ExecutionFuture {
-    let body = Vec::new();
-    let submission = req.body()
-        .fold(body, move |mut body, chunk| {
-            body.extend(chunk.into_iter());
-            Ok::<_, hyper::Error>(body)
-        })
-        .map_err(|_err| hyper::Error::Status)
-        .and_then(move |json| {
-            let submission: Submission = json::from_slice(&json).unwrap();
-            Ok(submission)
-        });
-
-    let pool = executor.pool.clone();
-    let builder = submission.and_then(move |sub| {
-        pool.spawn_fn(move || sub.construct_image_builder())
-            .map_err(From::from)
-    });
-    let docker = executor.client.clone();
-    let output = builder.and_then(|image_builder| execute(docker, image_builder));
-    let response = output.and_then(|output| Ok(Response::new().with_body(Body::from(output))));
-    Box::new(response)
+enum APIError {
+    BadRequest,
+    HyperError,
+    ExecutionError,
 }
 
-impl<T: Connect + Clone> Service for Executor<T> {
-    type Request = Request;
-    type Response = Response;
-    type Error = Error;
-    type Future = ExecutionFuture;
+impl<T: 'static + Clone> Service for APIService<T>
+    where T: Service<Request = Submission, Response = Output, Error = ExecutionError>
+{
+    type Request = hyper::server::Request;
+    type Response = hyper::server::Response;
+    type Error = hyper::Error;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
         match (req.method(), req.path()) {
             (&Method::Post, "/execute") => {
-                let clone = (*self).clone();
-                send_request(clone, req).then(|resp| {
-                    futures::future::ok(match resp {
-                        Ok(resp) => resp,
-                        ExecutionError::CompileError(string) => Response::new().with_body(string),
-                        ExecutionError::InternalError => {
-                            Response::new().with_body("Internal Error")
-                        }
-                        ExecutionError::RunTimeError => Response::new().with_body("Runtime error"),
+                let executor = self.executor.clone();
+                let response = req.body()
+                    .fold(Vec::new(), |mut body, chunk| {
+                        body.extend(chunk.into_iter());
+                        Ok::<_, hyper::Error>(body)
                     })
-                })
+                    .map_err(|_| APIError::HyperError)
+                    .and_then(|json| match json::from_slice::<Submission>(&json) {
+                        Ok(json) => future::ok(json),
+                        _ => future::err(APIError::BadRequest),
+                    })
+                    .and_then(move |sub: Submission| {
+                        executor.call(sub)
+                            .map_err(|_| APIError::ExecutionError)
+                            .and_then(|resp| {
+                                Ok(Response::new()
+                                    .with_body(Body::from(json::to_string(&resp).unwrap())))
+                            })
+                    })
+                    .then(|result| {
+                        let response = match result {
+                            Ok(response) => response,
+                            Err(APIError::BadRequest) => {
+                                Response::new()
+                                    .with_body(Body::from("Invalid json"))
+                                    .with_status(StatusCode::BadRequest)
+                            }
+                            _ => Response::new().with_body(Body::from("Unknown error")),
+                        };
+                        Ok(response)
+                    });
+                Box::new(response)
             }
-            _ => Box::new(futures::future::ok(
-                Response::new().with_status(StatusCode::NotFound),
-            )),
+            _ => {
+                Box::new(future::ok(Response::new()
+                    .with_body(Body::from("Invalid URL"))
+                    .with_status(StatusCode::NotFound)))
+            }
         }
     }
 }
@@ -252,12 +183,13 @@ fn main() {
     let client = Docker::<UnixConnector>::new(handle.clone());
     let pool = CpuPool::new(1);
     let service = listener.incoming().for_each(move |(socket, addr)| {
-        let executor = Executor {
-            client: client.clone(),
-            remote: remote.clone(),
-            pool: pool.clone(),
+        let api_service = APIService {
+            executor: Executor {
+                docker: client.clone(),
+                pool: pool.clone(),
+            },
         };
-        let server = Http::new().bind_connection(handle, socket, addr, executor);
+        let server = Http::new().bind_connection(handle, socket, addr, api_service);
         Ok(())
     });
     core.run(service).unwrap();
