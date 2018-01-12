@@ -175,23 +175,23 @@ mod tests {
 
     //#[test]
     //#fn test_container_start() {
-    //#  let mut core = Core::new().unwrap();
-    //#  let docker = Docker::<UnixConnector>::new(core.handle());
-    //#  let map: json::Map<String, json::Value> = json::from_str(
+    //#let mut core = Core::new().unwrap();
+    //#let docker = Docker::<UnixConnector>::new(core.handle());
+    //#let map: json::Map<String, json::Value> = json::from_str(
     //#		r#"{"Image": "hello-world:latest", "Command": ["/hello"]}"#
     //#	   ).unwrap();
-    //#  let mut builder = ContainerBuilder::new().with_body(map);
-    //#  builder.set_param("name", "mycontainer");
-    //#  builder.set_header(ContentType::json());
-    //#  let container = Containers::create_container_with(docker, builder)
+    //#let mut builder = ContainerBuilder::new().with_body(map);
+    //#builder.set_param("name", "mycontainer");
+    //#builder.set_header(ContentType::json());
+    //#let container = Containers::create_container_with(docker, builder)
     //#		.and_then(|(docker, container)| {
-    //#      let id = container.get("Id").unwrap();
-    //#      docker.start_container(id).map(|_| id)
-    //#  });
+    //#let id = container.get("Id").unwrap();
+    //#docker.start_container(id).map(|_| id)
+    //#});
     //
-    //#  let id = core.run(container).unwrap();
+    //#let id = core.run(container).unwrap();
     //
-    //#  assert!(id.get("Id").is_some());
+    //#assert!(id.get("Id").is_some());
     //#}
 
     #[test]

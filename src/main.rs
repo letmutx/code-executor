@@ -28,6 +28,7 @@ use hyper::header::ContentType;
 use tar::{Builder, Header};
 
 use cpupool::CpuPool;
+use std::rc::Rc;
 
 use futures::{future, Future};
 use futures::Stream;
@@ -38,7 +39,7 @@ use docker::Images;
 use docker::ContainerBuilder;
 use docker::ImageBuilder;
 
-use tokio_core::reactor::{Remote, Core};
+use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::TcpListener;
 
 use std::io::{self, ErrorKind};
@@ -86,33 +87,40 @@ enum Output {
 
 enum ExecutionError {}
 
-struct Executor<T> {
-    docker: Docker<T>,
+#[derive(Clone)]
+struct Executor<C> {
+    docker: Rc<Docker<C>>,
     pool: CpuPool,
 }
 
-impl<T: Connect + Clone> Service for Executor<T> {
+impl<C: Connect> Executor<C> {
+    fn new(connector: C, handle: Handle) -> Self {
+        Executor {
+            docker: Rc::new(Docker::new(connector, handle)),
+            pool: CpuPool::new(1),
+        }
+    }
+}
+
+impl<C: Connect> Service for Executor<C> {
     type Request = Submission;
     type Response = Output;
     type Error = ExecutionError;
     type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
-    fn call(&self, _sub: Self::Request) -> Self::Future {
+    fn call(&self, sub: Self::Request) -> Self::Future {
         unimplemented!();
     }
 }
 
-impl<T: Clone> Clone for Executor<T> {
-    fn clone(&self) -> Self {
-        Executor {
-            docker: self.docker.clone(),
-            pool: self.pool.clone(),
-        }
-    }
+struct APIService<E> {
+    executor: E,
 }
 
-struct APIService<T> {
-    executor: T,
+impl<E> APIService<E> {
+    fn new(executor: E) -> Self {
+        APIService { executor: executor }
+    }
 }
 
 enum APIError {
@@ -121,8 +129,8 @@ enum APIError {
     ExecutionError,
 }
 
-impl<T: 'static + Clone> Service for APIService<T>
-    where T: Service<Request = Submission, Response = Output, Error = ExecutionError>
+impl<E> Service for APIService<E>
+where E: Clone + Service<Request = Submission, Response = Output, Error = ExecutionError> + 'static
 {
     type Request = hyper::server::Request;
     type Response = hyper::server::Response;
@@ -138,37 +146,37 @@ impl<T: 'static + Clone> Service for APIService<T>
                         body.extend(chunk.into_iter());
                         Ok::<_, hyper::Error>(body)
                     })
-                    .map_err(|_| APIError::HyperError)
+                .map_err(|_| APIError::HyperError)
                     .and_then(|json| match json::from_slice::<Submission>(&json) {
                         Ok(json) => future::ok(json),
                         _ => future::err(APIError::BadRequest),
                     })
-                    .and_then(move |sub: Submission| {
-                        executor.call(sub)
-                            .map_err(|_| APIError::ExecutionError)
-                            .and_then(|resp| {
-                                Ok(Response::new()
-                                    .with_body(Body::from(json::to_string(&resp).unwrap())))
-                            })
-                    })
-                    .then(|result| {
-                        let response = match result {
-                            Ok(response) => response,
-                            Err(APIError::BadRequest) => {
-                                Response::new()
-                                    .with_body(Body::from("Invalid json"))
-                                    .with_status(StatusCode::BadRequest)
-                            }
-                            _ => Response::new().with_body(Body::from("Unknown error")),
-                        };
-                        Ok(response)
-                    });
+                .and_then(move |sub: Submission| {
+                    executor.call(sub)
+                        .map_err(|_| APIError::ExecutionError)
+                        .and_then(|resp| {
+                            Ok(Response::new()
+                               .with_body(Body::from(json::to_string(&resp).unwrap())))
+                        })
+                })
+                .then(|result| {
+                    let response = match result {
+                        Ok(response) => response,
+                        Err(APIError::BadRequest) => {
+                            Response::new()
+                                .with_body(Body::from("Invalid json"))
+                                .with_status(StatusCode::BadRequest)
+                        }
+                        _ => Response::new().with_body(Body::from("Unknown error")),
+                    };
+                    Ok(response)
+                });
                 Box::new(response)
             }
             _ => {
                 Box::new(future::ok(Response::new()
-                    .with_body(Body::from("Invalid URL"))
-                    .with_status(StatusCode::NotFound)))
+                                    .with_body(Body::from("Invalid URL"))
+                                    .with_status(StatusCode::NotFound)))
             }
         }
     }
@@ -180,15 +188,10 @@ fn main() {
     let remote = core.remote();
     let addr = "127.0.0.1:3000".parse().unwrap();
     let listener = TcpListener::bind(&addr, handle).unwrap();
-    let client = Docker::<UnixConnector>::new(handle.clone());
     let pool = CpuPool::new(1);
+    let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
     let service = listener.incoming().for_each(move |(socket, addr)| {
-        let api_service = APIService {
-            executor: Executor {
-                docker: client.clone(),
-                pool: pool.clone(),
-            },
-        };
+        let api_service = APIService::new(executor.clone());
         let server = Http::new().bind_connection(handle, socket, addr, api_service);
         Ok(())
     });

@@ -14,14 +14,14 @@ use docker::image::{ImageBuilder, BuildMessage};
 use docker::container::ContainerBuilder;
 use docker::common::Id;
 
-pub struct Docker<C = UnixConnector> {
+pub struct Docker<C> {
     client: Client<C>,
 }
 
 impl<C: Connect> Docker<C> {
-    pub fn new(handle: Handle) -> Docker {
+    pub fn new(connector: C, handle: Handle) -> Docker<C> {
         let client = Client::configure()
-            .connector(UnixConnector::new(handle.clone()))
+            .connector(connector)
             .build(&handle);
 
         Docker { client: client }
@@ -37,7 +37,7 @@ impl<C: Connect> Docker<C> {
         Images(Box::new(result))
     }
 
-    pub fn create_image<T: Into<hyper::Body>>(&self, image: ImageBuilder<T>) -> Progress {
+    pub fn create_image<T: Into<hyper::Body>>(&self, image: &ImageBuilder<T>) -> Progress {
         let mut request = image.build();
         match request {
             Ok(_) => (),
