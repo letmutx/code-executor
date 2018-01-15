@@ -19,22 +19,21 @@ use std::fmt::Debug;
 
 use std::path::PathBuf;
 
-
+use std::marker::PhantomData;
 use std::fmt;
 use std::collections::HashMap;
 
 mod client;
 mod log;
-mod error;
 mod image;
+mod error;
 mod container;
-mod common;
 
-pub use docker::image::Images;
-pub use docker::container::ContainerBuilder;
-pub use docker::image::ImageBuilder;
+pub use docker::image::{ImageBuilder, Message, Detail};
 pub use docker::client::Docker;
-pub use docker::common::Id;
+pub use docker::log::Logs;
+pub use docker::container::ContainerBuilder;
+pub use docker::error::DockerError;
 
 #[cfg(test)]
 mod tests {

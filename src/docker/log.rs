@@ -4,6 +4,10 @@ use bytes::BytesMut;
 use bytes::{ByteOrder, BigEndian};
 use std::iter::FromIterator;
 
+use hyper::client::Connect;
+use docker::Docker;
+use docker::DockerError;
+
 use futures::{Future, Stream, Poll, Async};
 
 pub struct LogMessage {
