@@ -4,7 +4,7 @@
 extern crate tokio_core;
 extern crate futures;
 extern crate futures_cpupool as cpupool;
-extern crate hyper;
+#[macro_use] extern crate hyper;
 extern crate hyperlocal;
 extern crate serde;
 extern crate tar;
@@ -16,6 +16,8 @@ extern crate serde_json as json;
 extern crate bytes;
 
 mod docker;
+use docker::DockerError;
+use docker::Logs;
 
 use hyper::server::Http;
 use hyper::server::Service;
@@ -34,14 +36,13 @@ use futures::{future, Future};
 use futures::Stream;
 
 use docker::Docker;
-use docker::Id;
-use docker::Images;
 use docker::ContainerBuilder;
-use docker::ImageBuilder;
+use docker::{ImageBuilder, Message, Detail};
 
 use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::TcpListener;
 
+use std::iter::Iterator;
 use std::io::{self, ErrorKind};
 use std::fs::File;
 use std::path::Path;
@@ -54,26 +55,11 @@ struct Submission {
     lang: Language,
 }
 
-const DOCKERFILE: &'static str = "resources/Dockerfile";
+ const DOCKERFILE: &'static str = "resources/Dockerfile";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 enum Language {
     C,
-}
-
-impl Submission {
-    fn construct_image_builder(&self) -> Result<ImageBuilder<Body>, io::Error> {
-        let mut builder = Builder::new(Vec::new());
-        let mut dockerfile = File::open(DOCKERFILE)?;
-        let mut header = Header::new_gnu();
-        header.set_path("code.c");
-        header.set_size(self.code.bytes().len() as u64);
-        header.set_cksum();
-        builder.append_file(Path::new("Dockerfile"), &mut dockerfile)?;
-        builder.append(&header, self.code.as_bytes())?;
-        let build = builder.into_inner()?;
-        Ok(ImageBuilder::new().with_body(Body::from(build)))
-    }
 }
 
 type Stdin = String;
@@ -85,7 +71,12 @@ enum Output {
     Output(i32, Stdin, Stderr),
 }
 
-enum ExecutionError {}
+enum ExecutionError {
+    BadConfig,
+    DockerError(DockerError),
+    CompileError(String),
+    UnknownError
+}
 
 #[derive(Clone)]
 struct Executor<C> {
@@ -102,6 +93,12 @@ impl<C: Connect> Executor<C> {
     }
 }
 
+enum Transform {
+    Id(String),
+    Error(String),
+    Empty
+}
+
 impl<C: Connect> Service for Executor<C> {
     type Request = Submission;
     type Response = Output;
@@ -109,8 +106,89 @@ impl<C: Connect> Service for Executor<C> {
     type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
     fn call(&self, sub: Self::Request) -> Self::Future {
-        unimplemented!();
+        let tar = self.pool.spawn_fn(move || build_tar(sub));
+        let client = self.docker.clone();
+        let client2 = client.clone();
+        let client3 = client.clone();
+        let client4 = client.clone();
+        let image = tar
+            .map_err(|_| ExecutionError::BadConfig)
+            .and_then(move |tar| {
+                ImageBuilder::new()
+                    .with_body(tar)
+                    .build_on(&client)
+                    .map_err(|e| ExecutionError::DockerError(e))
+        });
+        let container = image.and_then(move |messages| {
+            messages
+                .map_err(|e| ExecutionError::DockerError(DockerError::HyperError(e)))
+                .fold(Transform::Empty, |last_step, mut msg| {
+                    match msg {
+                        Message::Stream { ref mut stream } if stream.starts_with("sha256") => {
+                            let id = stream.split(":").skip(1).next().unwrap().to_owned();
+                            future::ok(Transform::Id(id))
+                        }
+                        Message::Stream { ref mut stream } if stream.contains("Step") => {
+                            match last_step {
+                                Transform::Id(msg) => future::ok(Transform::Id(msg)),
+                                _ => future::ok(Transform::Empty)
+                            }
+                        }
+                        Message::Stream { mut stream } => {
+                            match last_step {
+                                Transform::Id(msg) => future::ok(Transform::Id(msg)),
+                                Transform::Empty => future::ok(Transform::Error(stream)),
+                                Transform::Error(msg) => {
+                                    stream.push_str(&msg);
+                                    future::ok(Transform::Error(msg))
+                                }
+                            }
+                        }
+                        Message::ErrorDetail { .. } => future::ok(last_step)
+                    }
+                })
+                .and_then(|msg| {
+                    match msg {
+                        Transform::Error(msg) => future::err(ExecutionError::CompileError(msg)),
+                        Transform::Empty => future::err(ExecutionError::UnknownError),
+                        Transform::Id(id) => future::ok(id)
+                    }
+                })
+                .and_then(move |id| {
+                    let config = json!({
+                        "NetworkDisabled": true,
+                        "Image": id
+                    });
+                    ContainerBuilder::new()
+                        .with_body(config.as_object().unwrap().clone())
+                        .with_header(ContentType::json())
+                        .build_on(&client2.clone())
+                        .map_err(|_| ExecutionError::UnknownError)
+                })
+                .and_then(move |id| {
+                    client3.start_container(&id)
+                        .map_err(|_| ExecutionError::UnknownError)
+                        .and_then(|_| Ok(id))
+                })
+                .and_then(|id| {
+                    client4.logs(&id);
+                    unimplemented!()
+                })
+        });
+        unimplemented!()
     }
+}
+
+fn build_tar(sub: Submission) -> Result<Vec<u8>, ::std::io::Error> {
+    let mut builder = Builder::new(Vec::new());
+    let mut dockerfile = File::open(DOCKERFILE)?;
+    let mut header = Header::new_gnu();
+    header.set_path("code.c")?;
+    header.set_size(sub.code.bytes().len() as u64);
+    header.set_cksum();
+    builder.append_file(Path::new("Dockerfile"), &mut dockerfile)?;
+    builder.append(&header, sub.code.as_bytes())?;
+    builder.into_inner()
 }
 
 struct APIService<E> {
@@ -147,10 +225,10 @@ where E: Clone + Service<Request = Submission, Response = Output, Error = Execut
                         Ok::<_, hyper::Error>(body)
                     })
                 .map_err(|_| APIError::HyperError)
-                    .and_then(|json| match json::from_slice::<Submission>(&json) {
-                        Ok(json) => future::ok(json),
-                        _ => future::err(APIError::BadRequest),
-                    })
+                .and_then(|json| match json::from_slice::<Submission>(&json) {
+                    Ok(json) => future::ok(json),
+                    _ => future::err(APIError::BadRequest),
+                })
                 .and_then(move |sub: Submission| {
                     executor.call(sub)
                         .map_err(|_| APIError::ExecutionError)
@@ -182,18 +260,19 @@ where E: Clone + Service<Request = Submission, Response = Output, Error = Execut
     }
 }
 
-fn main() {
-    let mut core = Core::new().unwrap();
-    let handle = &core.handle();
-    let remote = core.remote();
-    let addr = "127.0.0.1:3000".parse().unwrap();
-    let listener = TcpListener::bind(&addr, handle).unwrap();
-    let pool = CpuPool::new(1);
-    let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
-    let service = listener.incoming().for_each(move |(socket, addr)| {
-        let api_service = APIService::new(executor.clone());
-        let server = Http::new().bind_connection(handle, socket, addr, api_service);
-        Ok(())
-    });
-    core.run(service).unwrap();
-}
+//
+// fn main() {
+//     let mut core = Core::new().unwrap();
+//     let handle = &core.handle();
+//     let remote = core.remote();
+//     let addr = "127.0.0.1:3000".parse().unwrap();
+//     let listener = TcpListener::bind(&addr, handle).unwrap();
+//     let pool = CpuPool::new(1);
+//     let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
+//     let service = listener.incoming().for_each(move |(socket, addr)| {
+//         let api_service = APIService::new(executor.clone());
+//         let server = Http::new().bind_connection(handle, socket, addr, api_service);
+//         Ok(())
+//     });
+//     core.run(service).unwrap();
+// }
