@@ -1,7 +1,10 @@
-use hyper::Error;
-use docker::image::BuilderError;
+use hyper;
 
 pub enum DockerError {
-    HyperError(Error),
-    ImageBuilderError(BuilderError),
+    HyperError(hyper::Error),
+    BadRequest,
+    InternalServerError,
+    CantAttach,
+    UnknownError,
+    NotFound
 }
