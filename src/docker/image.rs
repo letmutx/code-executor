@@ -1,5 +1,5 @@
 use futures::{Future, Poll, Stream, Async};
-use hyper::{self, Method, Request, Body};
+use hyper::{self, Method, Request, Body, StatusCode};
 use hyper::header::{Header, Headers};
 use hyper::client::Connect;
 use serde::de::{self, Visitor, Unexpected};
@@ -9,95 +9,46 @@ use url::form_urlencoded::Serializer as FormEncoder;
 use hyperlocal::{Uri, UnixConnector};
 use bytes::BytesMut;
 
+use futures::future;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 
 use docker::client::Docker;
-use docker::client::Progress;
-use docker::common::{Id, Tag};
+use docker::error::DockerError;
 
-#[derive(Serialize, Deserialize)]
-pub struct Image {
-    Containers: i32,
-    Created: u64,
-    Id: String,
-    //        Labels: HashMap<String, >,
-    ParentId: Id,
-    //        repo_digests: Vec<>,
-    RepoTags: Vec<Id>,
-    SharedSize: i64,
-    Size: u64,
-    VirtualSize: u64,
-}
-
-pub struct Images(pub Box<Future<Item = Vec<Image>, Error = hyper::Error> + 'static>);
-
-impl Images {
-    pub fn from_client<T: Connect + Clone>
-        (client: Docker<T>)
-         -> Box<Future<Item = (Docker<T>, Vec<Image>), Error = (Docker<T>, hyper::Error)>> {
-        let clone = client.clone();
-        let images = client.images()
-            .and_then(|resp| Ok((client, resp)))
-            .or_else(move |err| Err((clone, err)));
-        Box::new(images)
-    }
-
-    pub fn create_image_with<T: Connect + Clone, B: Into<hyper::Body>>
-        (client: Docker<T>,
-         image_builder: ImageBuilder<B>)
-         -> Box<Future<Item = (Docker<T>, BuildMessage), Error = (Docker<T>, hyper::Error)>> {
-        let clone = client.clone();
-        let image = client.create_image(image_builder)
-            .map_err(|e| (clone, e))
-            .and_then(|progress| Ok((client, progress)));
-        Box::new(image)
-    }
-
-    pub fn create_image_quietly_with<T, B>(client: Docker<T>,
-                                           image_builder: ImageBuilder<B>)
-                                           -> Box<Future<Item = (Docker<T>,
-                                                                 json::Map<String, json::Value>),
-                                                         Error = (Docker<T>, hyper::Error)>>
-        where T: Connect + Clone,
-              B: Into<hyper::Body>
-    {
-        let clone = client.clone();
-        let image = client.create_image_quiet(image_builder)
-            .map_err(|e| (clone, e))
-            .and_then(|progress| Ok((client, progress)));
-        Box::new(image)
-    }
-}
-
-impl Future for Images {
-    type Item = Vec<Image>;
-    type Error = hyper::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.0.poll()
-    }
-}
-
-pub struct BuildMessage {
+pub struct BuildMessages {
     body: hyper::Body,
     buf: BytesMut,
     finished: bool,
 }
 
-impl BuildMessage {
+#[derive(Deserialize, Debug)]
+pub struct Detail {
+    code: i32,
+    message: String,
+    error: String
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+pub enum Message {
+    Stream { stream: String },
+    ErrorDetail { error_detail: Detail }
+}
+
+impl BuildMessages {
     pub fn new(body: hyper::Body) -> Self {
-        BuildMessage {
+        BuildMessages {
             body: body,
             buf: BytesMut::with_capacity(64),
             finished: false,
         }
     }
 
-    pub fn next_message(&mut self) -> Result<Option<json::Value>, json::Error> {
+    pub fn next_message(&mut self) -> Result<Option<Message>, json::Error> {
         let (next, byte_offset) = {
-            let mut stream = JsonDeserializer::from_slice(&self.buf).into_iter::<json::Value>();
+            let mut stream = JsonDeserializer::from_slice(&self.buf).into_iter::<Message>();
             let next = stream.next();
             (next, stream.byte_offset())
         };
@@ -113,8 +64,8 @@ impl BuildMessage {
     }
 }
 
-impl Stream for BuildMessage {
-    type Item = json::Value;
+impl Stream for BuildMessages {
+    type Item = Message;
     type Error = hyper::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -162,13 +113,14 @@ impl Debug for BuilderError {
     }
 }
 
-pub struct ImageBuilder<T: Into<hyper::Body>> {
+pub struct ImageBuilder<T> {
     params: HashMap<String, String>,
     body: Option<T>,
     headers: Headers,
 }
 
-impl<T: Into<hyper::Body>> ImageBuilder<T> {
+impl<T> ImageBuilder<T>
+where T: Into<hyper::Body> {
     pub fn new() -> Self {
         ImageBuilder {
             params: HashMap::new(),
@@ -220,4 +172,65 @@ impl<T: Into<hyper::Body>> ImageBuilder<T> {
         }
         Ok(request)
     }
+
+    pub fn build_on<C: Connect>(self, client: &Docker<C>) -> Box<Future<Item = BuildMessages, Error = DockerError>> {
+        let request = match self.build() {
+            Ok(request) => request,
+            Err(_) => return Box::new(future::err(DockerError::BadRequest))
+        };
+        let response = client.request(request)
+            .and_then(|resp| {
+                match resp.status() {
+                    StatusCode::Ok => (),
+                    StatusCode::BadRequest => return future::err(DockerError::BadRequest),
+                    _ => return future::err(DockerError::InternalServerError),
+                }
+                future::ok(BuildMessages::new(resp.body()))
+            });
+        Box::new(response)
+    }
+}
+
+#[cfg(tests)]
+mod tests {
+    use tokio_core::reactor::Core;
+    use hyperlocal::UnixConnector;
+    use docker::image::ImageBuilder;
+    use docker::container::ContainerBuilder;
+    use hyper::header::ContentType;
+    use std::fs::{self, File};
+    use futures::{self, Future, Stream};
+    use std::path::Path;
+    use tar::{Builder, Header};
+    use json;
+    use hyper;
+    use docker::container::Containers;
+
+    fn get_client(handle: &Handle) -> (Core, Docker<UnixConnector>) {
+        let core = Core::new();
+        (core, Docker::<UnixConnector>::new(core.handle()))
+    }
+
+    #[test]
+    fn test_image_create() {
+
+        let (mut core, client) = get_client();
+        let image = ImageBuilder::new()
+                .with_body(make_tar())
+                .with_param("q", "true").build_on(&client);
+
+        core.run(image).unwrap();
+    }
+
+    fn make_tar() -> Vec<u8> {
+        let mut builder = Builder::new(Vec::new());
+        let mut dockerfile = File::open(DOCKERFILE).unwrap();
+        let mut hello_world = File::open(HELLO_WORLD).unwrap();
+        builder.append_file(Path::new("Dockerfile"), &mut dockerfile)
+            .unwrap();
+        builder.append_file(Path::new("hello.c"), &mut hello_world)
+            .unwrap();
+        builder.into_inner().unwrap()
+    }
+
 }
