@@ -1,30 +1,26 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
-extern crate tokio_core;
+extern crate bytes;
 extern crate futures;
 extern crate futures_cpupool as cpupool;
-#[macro_use] extern crate hyper;
+extern crate hyper;
 extern crate hyperlocal;
 extern crate serde;
-extern crate tar;
 #[macro_use]
 extern crate serde_derive;
-extern crate url;
 #[macro_use]
 extern crate serde_json as json;
-extern crate bytes;
+extern crate tar;
+extern crate tokio_core;
+extern crate url;
 
 mod docker;
 use docker::DockerError;
-use docker::Logs;
 
 use hyper::server::Http;
 use hyper::server::Service;
-use hyper::server::{Request, Response};
-use hyper::client::{Client, Connect};
+use hyper::server::Response;
+use hyper::client::Connect;
 use hyperlocal::UnixConnector;
-use hyper::{Method, StatusCode, Body, Error, Chunk};
+use hyper::{Body, Method, StatusCode};
 use hyper::header::ContentType;
 
 use tar::{Builder, Header};
@@ -36,18 +32,17 @@ use futures::{future, Future};
 use futures::Stream;
 
 use docker::Docker;
+use docker::log;
 use docker::ContainerBuilder;
-use docker::{ImageBuilder, Message, Detail};
+use docker::{ImageBuilder, Message};
 
 use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::TcpListener;
 
 use std::iter::Iterator;
-use std::io::{self, ErrorKind};
 use std::fs::File;
 use std::path::Path;
 use std::clone::Clone;
-
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Submission {
@@ -55,7 +50,7 @@ struct Submission {
     lang: Language,
 }
 
- const DOCKERFILE: &'static str = "resources/Dockerfile";
+const DOCKERFILE: &'static str = "resources/Dockerfile";
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 enum Language {
@@ -68,14 +63,14 @@ type Stderr = String;
 #[derive(Serialize)]
 enum Output {
     CompileError(String),
-    Output(i32, Stdin, Stderr),
+    Output(Stdin, Stderr),
 }
 
 enum ExecutionError {
     BadConfig,
     DockerError(DockerError),
     CompileError(String),
-    UnknownError
+    UnknownError,
 }
 
 #[derive(Clone)]
@@ -96,7 +91,7 @@ impl<C: Connect> Executor<C> {
 enum Transform {
     Id(String),
     Error(String),
-    Empty
+    Empty,
 }
 
 impl<C: Connect> Service for Executor<C> {
@@ -109,50 +104,41 @@ impl<C: Connect> Service for Executor<C> {
         let tar = self.pool.spawn_fn(move || build_tar(sub));
         let client = self.docker.clone();
         let client2 = client.clone();
-        let client3 = client.clone();
-        let client4 = client.clone();
-        let image = tar
-            .map_err(|_| ExecutionError::BadConfig)
+        let image = tar.map_err(|_| ExecutionError::BadConfig)
             .and_then(move |tar| {
                 ImageBuilder::new()
                     .with_body(tar)
                     .build_on(&client)
                     .map_err(|e| ExecutionError::DockerError(e))
-        });
-        let container = image.and_then(move |messages| {
+            });
+        let logs = image.and_then(move |messages| {
             messages
                 .map_err(|e| ExecutionError::DockerError(DockerError::HyperError(e)))
-                .fold(Transform::Empty, |last_step, mut msg| {
-                    match msg {
-                        Message::Stream { ref mut stream } if stream.starts_with("sha256") => {
-                            let id = stream.split(":").skip(1).next().unwrap().to_owned();
-                            future::ok(Transform::Id(id))
-                        }
-                        Message::Stream { ref mut stream } if stream.contains("Step") => {
-                            match last_step {
-                                Transform::Id(msg) => future::ok(Transform::Id(msg)),
-                                _ => future::ok(Transform::Empty)
-                            }
-                        }
-                        Message::Stream { mut stream } => {
-                            match last_step {
-                                Transform::Id(msg) => future::ok(Transform::Id(msg)),
-                                Transform::Empty => future::ok(Transform::Error(stream)),
-                                Transform::Error(msg) => {
-                                    stream.push_str(&msg);
-                                    future::ok(Transform::Error(msg))
-                                }
-                            }
-                        }
-                        Message::ErrorDetail { .. } => future::ok(last_step)
+                .fold(Transform::Empty, |last_step, mut msg| match msg {
+                    Message::Stream { ref mut stream } if stream.starts_with("sha256") => {
+                        let id = stream.split(":").skip(1).next().unwrap().to_owned();
+                        future::ok(Transform::Id(id))
                     }
+                    Message::Stream { ref mut stream } if stream.contains("Step") => {
+                        match last_step {
+                            Transform::Id(msg) => future::ok(Transform::Id(msg)),
+                            _ => future::ok(Transform::Empty),
+                        }
+                    }
+                    Message::Stream { mut stream } => match last_step {
+                        Transform::Id(msg) => future::ok(Transform::Id(msg)),
+                        Transform::Empty => future::ok(Transform::Error(stream)),
+                        Transform::Error(msg) => {
+                            stream.push_str(&msg);
+                            future::ok(Transform::Error(msg))
+                        }
+                    },
+                    Message::ErrorDetail { .. } => future::ok(last_step),
                 })
-                .and_then(|msg| {
-                    match msg {
-                        Transform::Error(msg) => future::err(ExecutionError::CompileError(msg)),
-                        Transform::Empty => future::err(ExecutionError::UnknownError),
-                        Transform::Id(id) => future::ok(id)
-                    }
+                .and_then(|msg| match msg {
+                    Transform::Error(msg) => future::err(ExecutionError::CompileError(msg)),
+                    Transform::Empty => future::err(ExecutionError::UnknownError),
+                    Transform::Id(id) => future::ok(id),
                 })
                 .and_then(move |id| {
                     let config = json!({
@@ -162,20 +148,47 @@ impl<C: Connect> Service for Executor<C> {
                     ContainerBuilder::new()
                         .with_body(config.as_object().unwrap().clone())
                         .with_header(ContentType::json())
-                        .build_on(&client2.clone())
+                        .build_on(&client2)
                         .map_err(|_| ExecutionError::UnknownError)
+                        .map(|id| (client2, id))
                 })
-                .and_then(move |id| {
-                    client3.start_container(&id)
+                .and_then(move |(client, id)| {
+                    client
+                        .start_container(&id)
                         .map_err(|_| ExecutionError::UnknownError)
-                        .and_then(|_| Ok(id))
+                        .and_then(|_| Ok((client, id)))
                 })
-                .and_then(|id| {
-                    client4.logs(&id);
-                    unimplemented!()
+                .and_then(|(client, id)| {
+                    client
+                        .logs(&id)
+                        .map_err(|_| ExecutionError::UnknownError)
+                        .and_then(|logs| {
+                            logs.map_err(|_| ExecutionError::UnknownError)
+                                .fold(
+                                    (String::from(""), String::from("")),
+                                    |(mut stdout, mut stderr), msg| {
+                                        match msg {
+                                            log::Message::Stdout(msg) => {
+                                                stdout.push_str(&msg);
+                                            }
+                                            log::Message::Stderr(msg) => {
+                                                stderr.push_str(&msg);
+                                            }
+                                            _ => (),
+                                        }
+                                        Ok((stdout, stderr))
+                                    },
+                                )
+                                .and_then(|(stdout, stderr)| Ok(Output::Output(stdout, stderr)))
+                        })
+                })
+                .then(|result| match result {
+                    Ok(output) => future::ok(output),
+                    Err(ExecutionError::CompileError(msg)) => future::ok(Output::CompileError(msg)),
+                    Err(e) => future::err(e),
                 })
         });
-        unimplemented!()
+        Box::new(logs)
     }
 }
 
@@ -208,7 +221,8 @@ enum APIError {
 }
 
 impl<E> Service for APIService<E>
-where E: Clone + Service<Request = Submission, Response = Output, Error = ExecutionError> + 'static
+where
+    E: Clone + Service<Request = Submission, Response = Output, Error = ExecutionError> + 'static,
 {
     type Request = hyper::server::Request;
     type Response = hyper::server::Response;
@@ -224,55 +238,51 @@ where E: Clone + Service<Request = Submission, Response = Output, Error = Execut
                         body.extend(chunk.into_iter());
                         Ok::<_, hyper::Error>(body)
                     })
-                .map_err(|_| APIError::HyperError)
-                .and_then(|json| match json::from_slice::<Submission>(&json) {
-                    Ok(json) => future::ok(json),
-                    _ => future::err(APIError::BadRequest),
-                })
-                .and_then(move |sub: Submission| {
-                    executor.call(sub)
-                        .map_err(|_| APIError::ExecutionError)
-                        .and_then(|resp| {
-                            Ok(Response::new()
-                               .with_body(Body::from(json::to_string(&resp).unwrap())))
-                        })
-                })
-                .then(|result| {
-                    let response = match result {
-                        Ok(response) => response,
-                        Err(APIError::BadRequest) => {
-                            Response::new()
+                    .map_err(|_| APIError::HyperError)
+                    .and_then(|json| match json::from_slice::<Submission>(&json) {
+                        Ok(json) => future::ok(json),
+                        _ => future::err(APIError::BadRequest),
+                    })
+                    .and_then(move |sub: Submission| {
+                        executor
+                            .call(sub)
+                            .map_err(|_| APIError::ExecutionError)
+                            .and_then(|resp| {
+                                Ok(Response::new()
+                                    .with_body(Body::from(json::to_string(&resp).unwrap())))
+                            })
+                    })
+                    .then(|result| {
+                        let response = match result {
+                            Ok(response) => response,
+                            Err(APIError::BadRequest) => Response::new()
                                 .with_body(Body::from("Invalid json"))
-                                .with_status(StatusCode::BadRequest)
-                        }
-                        _ => Response::new().with_body(Body::from("Unknown error")),
-                    };
-                    Ok(response)
-                });
+                                .with_status(StatusCode::BadRequest),
+                            _ => Response::new().with_body(Body::from("Unknown error")),
+                        };
+                        Ok(response)
+                    });
                 Box::new(response)
             }
-            _ => {
-                Box::new(future::ok(Response::new()
-                                    .with_body(Body::from("Invalid URL"))
-                                    .with_status(StatusCode::NotFound)))
-            }
+            _ => Box::new(future::ok(
+                Response::new()
+                    .with_body(Body::from("Invalid URL"))
+                    .with_status(StatusCode::NotFound),
+            )),
         }
     }
 }
 
-//
-// fn main() {
-//     let mut core = Core::new().unwrap();
-//     let handle = &core.handle();
-//     let remote = core.remote();
-//     let addr = "127.0.0.1:3000".parse().unwrap();
-//     let listener = TcpListener::bind(&addr, handle).unwrap();
-//     let pool = CpuPool::new(1);
-//     let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
-//     let service = listener.incoming().for_each(move |(socket, addr)| {
-//         let api_service = APIService::new(executor.clone());
-//         let server = Http::new().bind_connection(handle, socket, addr, api_service);
-//         Ok(())
-//     });
-//     core.run(service).unwrap();
-// }
+fn main() {
+    let mut core = Core::new().unwrap();
+    let handle = &core.handle();
+    let addr = "127.0.0.1:3000".parse().unwrap();
+    let listener = TcpListener::bind(&addr, handle).unwrap();
+    let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
+    let service = listener.incoming().for_each(move |(socket, addr)| {
+        let api_service = APIService::new(executor.clone());
+        let _ = Http::new().bind_connection(handle, socket, addr, api_service);
+        Ok(())
+    });
+    core.run(service).unwrap();
+}

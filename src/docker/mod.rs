@@ -1,35 +1,10 @@
-use hyper::Request;
-use hyper::{Uri as HyperUri, StatusCode, Method};
-use hyperlocal::{Uri, UnixConnector};
-use tokio_core::reactor::Handle;
-use futures::future;
-use hyper;
-use std::io::Read;
-use json;
-use futures::Future;
-use futures::Stream;
-use futures::Poll;
-use std::str::FromStr;
-use hyper::Headers;
-use hyper::header::Header;
-
-use futures::Async;
-
-use std::fmt::Debug;
-
-use std::path::PathBuf;
-
-use std::marker::PhantomData;
-use std::fmt;
-use std::collections::HashMap;
-
 mod client;
-mod log;
+pub mod log;
 mod image;
 mod error;
 mod container;
 
-pub use docker::image::{ImageBuilder, Message, Detail};
+pub use docker::image::{Detail, ImageBuilder, Message};
 pub use docker::client::Docker;
 pub use docker::log::Logs;
 pub use docker::container::ContainerBuilder;
@@ -97,7 +72,8 @@ mod tests {
         let tar = make_tar();
         let builder = ImageBuilder::new().with_body(tar).with_param("q", "true");
         let stream = docker.create_image_quiet(builder);
-        let run = stream.and_then(|progress| {
+        let run = stream
+            .and_then(|progress| {
                 assert!(progress.get("stream").is_some());
                 Ok(())
             })
@@ -115,7 +91,8 @@ mod tests {
         let tar = make_tar();
         let builder = ImageBuilder::new().with_body(tar).with_param("q", "true");
         let stream = docker.create_image(builder);
-        let run = stream.and_then(|progress| {
+        let run = stream
+            .and_then(|progress| {
                 progress.for_each(|msg| {
                     let js = json::to_string(&msg.unwrap()).unwrap();
                     let id: json::Map<String, json::Value> = json::from_str(&js).unwrap();
@@ -145,9 +122,11 @@ mod tests {
         let mut builder = Builder::new(Vec::new());
         let mut dockerfile = File::open(DOCKERFILE).unwrap();
         let mut hello_world = File::open(HELLO_WORLD).unwrap();
-        builder.append_file(Path::new("Dockerfile"), &mut dockerfile)
+        builder
+            .append_file(Path::new("Dockerfile"), &mut dockerfile)
             .unwrap();
-        builder.append_file(Path::new("hello.c"), &mut hello_world)
+        builder
+            .append_file(Path::new("hello.c"), &mut hello_world)
             .unwrap();
         builder.into_inner().unwrap()
     }
@@ -160,8 +139,10 @@ mod tests {
         let tar = make_tar();
         let builder = ImageBuilder::new().with_body(tar).with_param("q", "true");
         let images = Images::create_image_with(docker, builder);
-        let chain = images.and_then(|(docker, progress)| {
-                progress.for_each(|msg| {
+        let chain = images
+            .and_then(|(docker, progress)| {
+                progress
+                    .for_each(|msg| {
                         let js = json::to_string(&msg.unwrap()).unwrap();
                         let id: json::Map<String, json::Value> = json::from_str(&js).unwrap();
                         futures::future::ok(())
@@ -198,10 +179,12 @@ mod tests {
         let mut core = Core::new().unwrap();
         let docker = Docker::<UnixConnector>::new(core.handle());
         let logs = docker.logs("3901a37be11c").and_then(move |stream| {
-            stream.map_err(|_| hyper::Error::Incomplete).for_each(|message| {
-                println!("{}", message);
-                futures::future::ok(())
-            })
+            stream
+                .map_err(|_| hyper::Error::Incomplete)
+                .for_each(|message| {
+                    println!("{}", message);
+                    futures::future::ok(())
+                })
         });
         let logs = core.run(logs).unwrap();
     }

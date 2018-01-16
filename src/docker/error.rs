@@ -6,5 +6,5 @@ pub enum DockerError {
     InternalServerError,
     CantAttach,
     UnknownError,
-    NotFound
+    NotFound,
 }

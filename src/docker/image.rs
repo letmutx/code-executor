@@ -1,12 +1,10 @@
-use futures::{Future, Poll, Stream, Async};
-use hyper::{self, Method, Request, Body, StatusCode};
+use futures::{Async, Future, Poll, Stream};
+use hyper::{self, Method, Request, StatusCode};
 use hyper::header::{Header, Headers};
 use hyper::client::Connect;
-use serde::de::{self, Visitor, Unexpected};
-use serde::{Serializer, Deserializer, Deserialize};
 use json::{self, Deserializer as JsonDeserializer};
 use url::form_urlencoded::Serializer as FormEncoder;
-use hyperlocal::{Uri, UnixConnector};
+use hyperlocal::Uri;
 use bytes::BytesMut;
 
 use futures::future;
@@ -27,14 +25,14 @@ pub struct BuildMessages {
 pub struct Detail {
     code: i32,
     message: String,
-    error: String
+    error: String,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum Message {
     Stream { stream: String },
-    ErrorDetail { error_detail: Detail }
+    ErrorDetail { error_detail: Detail },
 }
 
 impl BuildMessages {
@@ -120,7 +118,9 @@ pub struct ImageBuilder<T> {
 }
 
 impl<T> ImageBuilder<T>
-where T: Into<hyper::Body> {
+where
+    T: Into<hyper::Body>,
+{
     pub fn new() -> Self {
         ImageBuilder {
             params: HashMap::new(),
@@ -173,20 +173,22 @@ where T: Into<hyper::Body> {
         Ok(request)
     }
 
-    pub fn build_on<C: Connect>(self, client: &Docker<C>) -> Box<Future<Item = BuildMessages, Error = DockerError>> {
+    pub fn build_on<C: Connect>(
+        self,
+        client: &Docker<C>,
+    ) -> Box<Future<Item = BuildMessages, Error = DockerError>> {
         let request = match self.build() {
             Ok(request) => request,
-            Err(_) => return Box::new(future::err(DockerError::BadRequest))
+            Err(_) => return Box::new(future::err(DockerError::BadRequest)),
         };
-        let response = client.request(request)
-            .and_then(|resp| {
-                match resp.status() {
-                    StatusCode::Ok => (),
-                    StatusCode::BadRequest => return future::err(DockerError::BadRequest),
-                    _ => return future::err(DockerError::InternalServerError),
-                }
-                future::ok(BuildMessages::new(resp.body()))
-            });
+        let response = client.request(request).and_then(|resp| {
+            match resp.status() {
+                StatusCode::Ok => (),
+                StatusCode::BadRequest => return future::err(DockerError::BadRequest),
+                _ => return future::err(DockerError::InternalServerError),
+            }
+            future::ok(BuildMessages::new(resp.body()))
+        });
         Box::new(response)
     }
 }
@@ -213,11 +215,11 @@ mod tests {
 
     #[test]
     fn test_image_create() {
-
         let (mut core, client) = get_client();
         let image = ImageBuilder::new()
-                .with_body(make_tar())
-                .with_param("q", "true").build_on(&client);
+            .with_body(make_tar())
+            .with_param("q", "true")
+            .build_on(&client);
 
         core.run(image).unwrap();
     }
@@ -226,9 +228,11 @@ mod tests {
         let mut builder = Builder::new(Vec::new());
         let mut dockerfile = File::open(DOCKERFILE).unwrap();
         let mut hello_world = File::open(HELLO_WORLD).unwrap();
-        builder.append_file(Path::new("Dockerfile"), &mut dockerfile)
+        builder
+            .append_file(Path::new("Dockerfile"), &mut dockerfile)
             .unwrap();
-        builder.append_file(Path::new("hello.c"), &mut hello_world)
+        builder
+            .append_file(Path::new("hello.c"), &mut hello_world)
             .unwrap();
         builder.into_inner().unwrap()
     }

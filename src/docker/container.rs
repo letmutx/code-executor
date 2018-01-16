@@ -5,7 +5,7 @@ use url::form_urlencoded::Serializer as FormEncoder;
 
 use hyper::{self, Method, Request};
 use hyper::header::{Header, Headers};
-use futures::{future, Poll, Future};
+use futures::{future, Future};
 use futures::Stream;
 
 use docker::error::DockerError;
@@ -74,34 +74,40 @@ impl ContainerBuilder {
         Ok(req)
     }
 
-    pub fn build_on<C: Connect>(self, client: &Docker<C>) -> Box<Future<Item = String, Error = DockerError>> {
+    pub fn build_on<C: Connect>(
+        self,
+        client: &Docker<C>,
+    ) -> Box<Future<Item = String, Error = DockerError>> {
         let request = match self.build() {
             Ok(request) => request,
-            _ => return Box::new(future::err(DockerError::BadRequest))
+            _ => return Box::new(future::err(DockerError::BadRequest)),
         };
-        let response = client.request(request)
-            .and_then(|resp| {
-                let status = resp.status();
-                resp.body()
-                    .map_err(|e| DockerError::HyperError(e))
-                    .fold(Vec::new(), |mut body, chunk| {
-                        body.extend(&*chunk);
-                        Ok(body)
-                    })
-                    .and_then(move |body| match json::from_slice(&body) {
-                        Ok(json::Value::Object(map)) => {
-                            match status {
-                                StatusCode::Created => future::ok(
-                                    map.get("Id").expect("expected id").as_str().unwrap().to_owned()
-                                ),
-                                StatusCode::NotAcceptable => future::err(DockerError::CantAttach),
-                                StatusCode::NotFound | StatusCode::BadRequest => future::err(DockerError::BadRequest),
-                                _ => future::err(DockerError::InternalServerError),
-                            }
+        let response = client.request(request).and_then(|resp| {
+            let status = resp.status();
+            resp.body()
+                .map_err(|e| DockerError::HyperError(e))
+                .fold(Vec::new(), |mut body, chunk| {
+                    body.extend(&*chunk);
+                    Ok(body)
+                })
+                .and_then(move |body| match json::from_slice(&body) {
+                    Ok(json::Value::Object(map)) => match status {
+                        StatusCode::Created => future::ok(
+                            map.get("Id")
+                                .expect("expected id")
+                                .as_str()
+                                .unwrap()
+                                .to_owned(),
+                        ),
+                        StatusCode::NotAcceptable => future::err(DockerError::CantAttach),
+                        StatusCode::NotFound | StatusCode::BadRequest => {
+                            future::err(DockerError::BadRequest)
                         }
-                        _ => future::err(DockerError::UnknownError)
-                    })
-            });
+                        _ => future::err(DockerError::InternalServerError),
+                    },
+                    _ => future::err(DockerError::UnknownError),
+                })
+        });
         Box::new(response)
     }
 }

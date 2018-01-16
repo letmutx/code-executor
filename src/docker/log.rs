@@ -1,24 +1,21 @@
-use hyper::{Body, Chunk};
-use hyper;
+use hyper::Body;
 use bytes::BytesMut;
-use bytes::{ByteOrder, BigEndian};
-use std::iter::FromIterator;
+use bytes::{BigEndian, ByteOrder};
 
-use hyper::client::Connect;
-use docker::Docker;
 use docker::DockerError;
 
-use futures::{Future, Stream, Poll, Async};
+use futures::{Async, Poll, Stream};
 
-pub struct LogMessage {
+pub struct Logs {
     body: Body,
+    finished: bool,
     state: State,
-    bytes: BytesMut,
+    buf: BytesMut,
 }
 
 enum State {
     Head,
-    Body(u32),
+    Body(Header),
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,7 +36,7 @@ impl Header {
             0u8 => LogType::Stdin,
             1u8 => LogType::Stdout,
             2u8 => LogType::Stderr,
-            _ => panic!(),
+            _ => unreachable!(),
         };
         let size = BigEndian::read_u32(&bytes[4..]);
         Header {
@@ -49,18 +46,19 @@ impl Header {
     }
 }
 
-impl LogMessage {
+impl Logs {
     pub fn new(body: Body) -> Self {
-        LogMessage {
+        Logs {
             body: body,
+            finished: false,
             state: State::Head,
-            bytes: BytesMut::with_capacity(64),
+            buf: BytesMut::with_capacity(64),
         }
     }
 
     fn can_read_head(&self) -> bool {
         match self.state {
-            State::Head if self.bytes.len() >= 8 => true,
+            State::Head if self.buf.len() >= 8 => true,
             _ => false,
         }
     }
@@ -68,8 +66,8 @@ impl LogMessage {
     fn read_head(&mut self) -> Option<Header> {
         match self.state {
             State::Head => {
-                let bytes = self.bytes.split_to(8);
-                Some(Header::new(&bytes))
+                let buf = self.buf.split_to(8);
+                Some(Header::new(&buf))
             }
             _ => None,
         }
@@ -77,66 +75,78 @@ impl LogMessage {
 
     fn can_read_body(&self) -> bool {
         match self.state {
-            State::Body(size) if self.bytes.len() >= size as usize => true,
+            State::Body(Header { size, .. }) if self.buf.len() >= size as usize => true,
             _ => false,
         }
     }
 
-    fn read_body(&mut self) -> Option<String> {
+    fn read_body(&mut self) -> Option<Message> {
         match self.state {
-            State::Body(size) => {
-                let bytes = self.bytes.split_to(size as usize);
-                let body = String::from_utf8(bytes.to_vec()).unwrap();
-                Some(body)
+            State::Body(Header { ref log_type, size }) => {
+                let bytes = self.buf.split_to(size as usize);
+                let body = String::from_utf8(bytes.to_vec()).expect("bad vec");
+                Some(match log_type {
+                    &LogType::Stdin => Message::Stdin(body),
+                    &LogType::Stdout => Message::Stdout(body),
+                    &LogType::Stderr => Message::Stderr(body),
+                })
             }
-            _ => unreachable!(),
+            State::Head => unreachable!(),
         }
     }
 }
 
-pub struct Logs(pub Box<Future<Item = LogMessage, Error = hyper::Error>>);
-
-impl Future for Logs {
-    type Item = LogMessage;
-    type Error = hyper::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.0.poll()
-    }
+pub enum Message {
+    Stdout(String),
+    Stderr(String),
+    Stdin(String),
 }
 
-impl Stream for LogMessage {
-    type Item = String;
-    type Error = hyper::Error;
+impl Stream for Logs {
+    type Item = Message;
+    type Error = DockerError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let chunk = self.body.poll();
-        match chunk {
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Ok(Async::Ready(Some(chunk))) => {
-                self.bytes.extend(&*chunk);
-                if self.can_read_head() {
-                    if let Some(header) = self.read_head() {
-                        (*self).state = State::Body(header.size);
-                    }
-                }
-                if self.can_read_body() {
-                    if let Some(body) = self.read_body() {
-                        (*self).state = State::Head;
-                        return Ok(Async::Ready(Some(body)));
-                    }
-                }
-                Ok(Async::NotReady)
+        if self.finished {
+            if self.can_read_head() {
+                let head = self.read_head().expect("can't read head");
+                self.state = State::Body(head);
             }
-            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
-            Err(e) => Err(e),
+            if self.can_read_body() {
+                let body = self.read_body().expect("bad body");
+                return Ok(Async::Ready(Some(body)));
+            }
+            return Ok(Async::Ready(None));
         }
+
+        match self.body.poll() {
+            Ok(Async::Ready(Some(chunk))) => {
+                self.buf.extend(&*chunk);
+            }
+            Err(_) => return Err(DockerError::UnknownError),
+            Ok(Async::Ready(None)) => {
+                self.finished = true;
+            }
+            Ok(Async::NotReady) => (),
+        }
+
+        if self.can_read_head() {
+            let head = self.read_head().expect("can't read head");
+            self.state = State::Body(head);
+        }
+
+        if self.can_read_body() {
+            let body = self.read_body().expect("bad body");
+            return Ok(Async::Ready(Some(body)));
+        }
+
+        Ok(Async::NotReady)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LogMessage, Logs, Header, LogType};
+    use super::{Header, LogType, Logs, Logs};
     use hyper::{Body, Chunk};
     use tokio_core::reactor::Core;
     use futures::Stream;
