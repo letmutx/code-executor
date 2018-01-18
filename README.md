@@ -5,8 +5,8 @@ There are ~~lot of bugs, I know. I will (hopefully) fix them someday~~. Feel fre
 
 ## Steps to run
 
-1. Install [rust][https://rustup.rs]
-2. Install [docker][https://get.docker.com]
+1. Install [rust](https://rustup.rs)
+2. Install [docker](https://get.docker.com)
 3. Do `cargo run`
 
 Copy this json to a file, 
