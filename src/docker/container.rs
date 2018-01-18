@@ -40,11 +40,13 @@ impl ContainerBuilder {
         self.headers.set(header);
     }
 
+    #[allow(dead_code)]
     pub fn with_param(mut self, key: &str, value: &str) -> Self {
         self.set_param(key, value);
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_header<H: Header>(mut self, header: H) -> Self {
         self.set_header(header);
         self
@@ -101,6 +103,7 @@ impl ContainerBuilder {
                         ),
                         StatusCode::NotAcceptable => future::err(DockerError::CantAttach),
                         StatusCode::NotFound | StatusCode::BadRequest => {
+                            println!("container request body: {:?}", body);
                             future::err(DockerError::BadRequest)
                         }
                         _ => future::err(DockerError::InternalServerError),

@@ -9,8 +9,6 @@ use bytes::BytesMut;
 
 use futures::future;
 use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Debug;
 
 use docker::client::Docker;
 use docker::error::DockerError;
@@ -25,14 +23,19 @@ pub struct BuildMessages {
 pub struct Detail {
     code: i32,
     message: String,
-    error: String,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum Message {
-    Stream { stream: String },
-    ErrorDetail { error_detail: Detail },
+    Stream {
+        stream: String,
+    },
+    ErrorDetail {
+        #[serde(rename = "errorDetail")]
+        error_detail: Detail,
+        error: String,
+    },
 }
 
 impl BuildMessages {
@@ -53,11 +56,14 @@ impl BuildMessages {
 
         match next {
             Some(Ok(value)) => {
-                self.buf.split_off(byte_offset);
+                self.buf = self.buf.split_off(byte_offset);
                 Ok(Some(value))
             }
-            Some(Err(e)) => Err(e),
-            None => return Ok(None),
+            Some(Err(e)) => {
+                debug!("invalid stream: {:?}", self.buf);
+                Err(e)
+            }
+            None => Ok(None),
         }
     }
 }
@@ -68,7 +74,7 @@ impl Stream for BuildMessages {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if self.finished {
-            if self.buf.is_empty() {
+            if self.buf == r"\r\n" {
                 Ok(Async::Ready(None))
             } else {
                 let next_message = self.next_message();
@@ -95,19 +101,14 @@ impl Stream for BuildMessages {
             if let Ok(Some(value)) = next_message {
                 Ok(Async::Ready(Some(value)))
             } else {
-                Ok(Async::NotReady)
+                // TODO: use task::notify() instead
+                if self.buf == "\r\n" {
+                    Ok(Async::Ready(None))
+                } else {
+                    Ok(Async::NotReady)
+                }
             }
         }
-    }
-}
-
-pub enum BuilderError {
-    BadParams,
-}
-
-impl Debug for BuilderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "{:?}", *self)
     }
 }
 
@@ -146,6 +147,7 @@ where
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_header<H: Header>(mut self, header: H) -> Self {
         self.set_header(header);
         self
@@ -156,7 +158,7 @@ where
         self
     }
 
-    pub fn build(self) -> Result<Request, BuilderError> {
+    pub fn build(self) -> Result<Request, DockerError> {
         let params = FormEncoder::new(String::new())
             .extend_pairs(self.params)
             .finish();
@@ -166,6 +168,7 @@ where
             uri.push_str(&params);
         }
         let uri = Uri::new("/var/run/docker.sock", &uri);
+        trace!("build params: {:?}", &uri);
         let mut request = Request::new(Method::Post, uri.into());
         if let Some(body) = self.body {
             request.set_body(body);
@@ -182,6 +185,7 @@ where
             Err(_) => return Box::new(future::err(DockerError::BadRequest)),
         };
         let response = client.request(request).and_then(|resp| {
+            trace!("image build status: {}", resp.status());
             match resp.status() {
                 StatusCode::Ok => (),
                 StatusCode::BadRequest => return future::err(DockerError::BadRequest),

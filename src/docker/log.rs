@@ -25,6 +25,7 @@ enum LogType {
     Stderr,
 }
 
+#[derive(Debug)]
 struct Header {
     pub log_type: LogType,
     pub size: u32,
@@ -57,10 +58,13 @@ impl Logs {
     }
 
     fn can_read_head(&self) -> bool {
-        match self.state {
+        let can = match self.state {
             State::Head if self.buf.len() >= 8 => true,
             _ => false,
-        }
+        };
+
+        trace!("can_read_head: {}", can);
+        can
     }
 
     fn read_head(&mut self) -> Option<Header> {
@@ -74,10 +78,12 @@ impl Logs {
     }
 
     fn can_read_body(&self) -> bool {
-        match self.state {
+        let can = match self.state {
             State::Body(Header { size, .. }) if self.buf.len() >= size as usize => true,
             _ => false,
-        }
+        };
+        trace!("can_read_body: {}", can);
+        can
     }
 
     fn read_body(&mut self) -> Option<Message> {
@@ -96,6 +102,7 @@ impl Logs {
     }
 }
 
+#[derive(Debug)]
 pub enum Message {
     Stdout(String),
     Stderr(String),
@@ -108,6 +115,11 @@ impl Stream for Logs {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if self.finished {
+            println!("body empty, finished");
+            trace!("buf len: {}", self.buf.len());
+            if self.buf.is_empty() {
+                return Ok(Async::Ready(None));
+            }
             if self.can_read_head() {
                 let head = self.read_head().expect("can't read head");
                 self.state = State::Body(head);
@@ -122,25 +134,37 @@ impl Stream for Logs {
         match self.body.poll() {
             Ok(Async::Ready(Some(chunk))) => {
                 self.buf.extend(&*chunk);
+                debug!("logs buf: {:?}", self.buf);
             }
             Err(_) => return Err(DockerError::UnknownError),
             Ok(Async::Ready(None)) => {
+                trace!("body empty");
                 self.finished = true;
+                debug!("self.finished: {}", self.finished);
             }
-            Ok(Async::NotReady) => (),
+            Ok(Async::NotReady) => {
+                trace!("body not ready");
+                ()
+            }
         }
 
         if self.can_read_head() {
-            let head = self.read_head().expect("can't read head");
+            let head = self.read_head().expect("bad head");
+            trace!("head: {:?}", head);
             self.state = State::Body(head);
         }
 
         if self.can_read_body() {
             let body = self.read_body().expect("bad body");
+            trace!("body: {:?}", body);
             return Ok(Async::Ready(Some(body)));
         }
 
-        Ok(Async::NotReady)
+        if self.finished && self.buf.is_empty() {
+            Ok(Async::Ready(None))
+        } else {
+            Ok(Async::NotReady)
+        }
     }
 }
 

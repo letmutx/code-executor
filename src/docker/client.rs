@@ -5,6 +5,8 @@ use hyper::client::{Connect, Request};
 use tokio_core::reactor::Handle;
 use docker::log::Logs;
 use docker::error::DockerError;
+use hyper::header::{Connection, ConnectionOption};
+use unicase::Ascii;
 
 use std::collections::HashMap;
 use url::form_urlencoded::Serializer as FormEncoder;
@@ -56,11 +58,18 @@ impl<C: Connect> Docker<C> {
             .finish();
         let mut uri = format!("v1.30/containers/{id}/logs?", id = container_id);
         uri.push_str(&params);
+        trace!("{}", uri);
         let uri = Uri::new("/var/run/docker.sock", &uri);
-        let request = Request::new(Method::Get, uri.into());
+        let mut request = Request::new(Method::Get, uri.into());
+        let upgrade = Connection(vec![
+            ConnectionOption::ConnectionHeader(Ascii::new("upgrade".to_owned())),
+        ]);
+        request.headers_mut().set(upgrade);
+        println!("request: {}", *request.headers_mut());
         let response = self.request(request).and_then(|resp| {
+            trace!("logs status: {}", resp.status());
             match resp.status() {
-                StatusCode::SwitchingProtocols => (),
+                StatusCode::Ok | StatusCode::SwitchingProtocols => (),
                 StatusCode::NotFound => return future::err(DockerError::NotFound),
                 _ => return future::err(DockerError::InternalServerError),
             }

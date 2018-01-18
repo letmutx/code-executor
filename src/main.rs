@@ -1,11 +1,11 @@
 extern crate bytes;
-extern crate futures;
-#[macro_use]
-extern crate log as logger;
 extern crate env_logger;
+extern crate futures;
 extern crate futures_cpupool as cpupool;
 extern crate hyper;
 extern crate hyperlocal;
+#[macro_use]
+extern crate log as logger;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
@@ -13,6 +13,7 @@ extern crate serde_derive;
 extern crate serde_json as json;
 extern crate tar;
 extern crate tokio_core;
+extern crate unicase;
 extern crate url;
 
 mod docker;
@@ -60,15 +61,16 @@ enum Language {
     C,
 }
 
-type Stdin = String;
+type Stdout = String;
 type Stderr = String;
 
 #[derive(Serialize)]
 enum Output {
-    CompileError(String),
-    Output(Stdin, Stderr),
+    #[serde(rename = "compile_error")] CompileError(String),
+    #[serde(rename = "output")] Output { stdout: Stdout, stderr: Stderr },
 }
 
+#[derive(Debug)]
 enum ExecutionError {
     BadConfig,
     DockerError(DockerError),
@@ -110,19 +112,34 @@ impl<C: Connect> Service for Executor<C> {
         let client2 = client.clone();
         let image = tar.map_err(|_| ExecutionError::BadConfig)
             .and_then(move |tar| {
+                trace!("building image");
                 ImageBuilder::new()
                     .with_body(tar)
+                    .with_param("q", "true")
                     .build_on(&client)
-                    .map_err(|e| ExecutionError::DockerError(e))
+                    .map_err(|e| {
+                        debug!("error: {:?}", e);
+                        ExecutionError::DockerError(e)
+                    })
             });
         let logs = image.and_then(move |messages| {
             messages
-                .map_err(|e| ExecutionError::DockerError(DockerError::HyperError(e)))
+                .map_err(|e| {
+                    debug!("error: {:?}", e);
+                    ExecutionError::DockerError(DockerError::HyperError(e))
+                })
                 .fold(Transform::Empty, |last_step, mut msg| {
                     debug!("build message: {:?}", msg);
+                    // TODO: remove terminal coloring sequences
                     match msg {
                         Message::Stream { ref mut stream } if stream.starts_with("sha256") => {
-                            let id = stream.split(":").skip(1).next().unwrap().to_owned();
+                            let id = stream
+                                .split(":")
+                                .skip(1)
+                                .next()
+                                .unwrap()
+                                .trim_right()
+                                .to_owned();
                             future::ok(Transform::Id(id))
                         }
                         Message::Stream { ref mut stream } if stream.contains("Step") => {
@@ -131,20 +148,26 @@ impl<C: Connect> Service for Executor<C> {
                                 _ => future::ok(Transform::Empty),
                             }
                         }
+                        // cache messages - no thank you :|
+                        Message::Stream { ref stream } if stream.contains("---") => {
+                            future::ok(last_step)
+                        }
+                        // Not a step/id/cache, append all messages in between
                         Message::Stream { mut stream } => match last_step {
                             Transform::Id(msg) => future::ok(Transform::Id(msg)),
                             Transform::Empty => future::ok(Transform::Error(stream)),
                             Transform::Error(msg) => {
                                 stream.push_str(&msg);
-                                future::ok(Transform::Error(msg))
+                                future::ok(Transform::Error(stream))
                             }
                         },
+                        // compilation error. last step is supposed to have the compile error
                         Message::ErrorDetail { .. } => future::ok(last_step),
                     }
                 })
                 .and_then(|msg| match msg {
                     Transform::Error(msg) => future::err(ExecutionError::CompileError(msg)),
-                    Transform::Empty => future::err(ExecutionError::UnknownError),
+                    Transform::Empty => unreachable!(),
                     Transform::Id(id) => future::ok(id),
                 })
                 .and_then(move |id| {
@@ -157,7 +180,10 @@ impl<C: Connect> Service for Executor<C> {
                         .with_body(config.as_object().unwrap().clone())
                         .with_header(ContentType::json())
                         .build_on(&client2)
-                        .map_err(|_| ExecutionError::UnknownError)
+                        .map_err(|e| {
+                            error!("can't build container: {:?}", e);
+                            ExecutionError::UnknownError
+                        })
                         .map(|id| (client2, id))
                 })
                 .and_then(move |(client, id)| {
@@ -194,13 +220,21 @@ impl<C: Connect> Service for Executor<C> {
                                         Ok((stdout, stderr))
                                     },
                                 )
-                                .and_then(|(stdout, stderr)| Ok(Output::Output(stdout, stderr)))
+                                .and_then(|(stdout, stderr)| {
+                                    Ok(Output::Output {
+                                        stdout: stdout,
+                                        stderr: stderr,
+                                    })
+                                })
                         })
                 })
                 .then(|result| match result {
                     Ok(output) => future::ok(output),
                     Err(ExecutionError::CompileError(msg)) => future::ok(Output::CompileError(msg)),
-                    Err(e) => future::err(e)
+                    Err(e) => {
+                        debug!("error in executor: {:?}", e);
+                        future::err(e)
+                    }
                 })
         });
         Box::new(logs)
@@ -229,6 +263,7 @@ impl<E> APIService<E> {
     }
 }
 
+#[derive(Debug)]
 enum APIError {
     BadRequest,
     HyperError,
@@ -300,6 +335,8 @@ fn main() {
     let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
     let service = listener.incoming().for_each(move |(socket, addr)| {
         let api_service = APIService::new(executor.clone());
+        // TODO: move away from proto
+        #[allow(deprecated)]
         let _ = Http::new().bind_connection(handle, socket, addr, api_service);
         Ok(())
     });
