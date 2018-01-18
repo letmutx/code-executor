@@ -66,7 +66,7 @@ type Stderr = String;
 
 #[derive(Serialize)]
 enum Output {
-    #[serde(rename = "compile_error")] CompileError(String),
+    #[serde(rename = "compile_error")] CompileError { error: String },
     #[serde(rename = "output")] Output { stdout: Stdout, stderr: Stderr },
 }
 
@@ -230,7 +230,9 @@ impl<C: Connect> Service for Executor<C> {
                 })
                 .then(|result| match result {
                     Ok(output) => future::ok(output),
-                    Err(ExecutionError::CompileError(msg)) => future::ok(Output::CompileError(msg)),
+                    Err(ExecutionError::CompileError(msg)) => {
+                        future::ok(Output::CompileError { error: msg })
+                    }
                     Err(e) => {
                         debug!("error in executor: {:?}", e);
                         future::err(e)
