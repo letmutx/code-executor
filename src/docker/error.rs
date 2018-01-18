@@ -1,5 +1,6 @@
 use hyper;
 
+#[derive(Debug)]
 pub enum DockerError {
     HyperError(hyper::Error),
     BadRequest,

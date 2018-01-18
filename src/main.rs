@@ -1,5 +1,8 @@
 extern crate bytes;
 extern crate futures;
+#[macro_use]
+extern crate log as logger;
+extern crate env_logger;
 extern crate futures_cpupool as cpupool;
 extern crate hyper;
 extern crate hyperlocal;
@@ -101,6 +104,7 @@ impl<C: Connect> Service for Executor<C> {
     type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
     fn call(&self, sub: Self::Request) -> Self::Future {
+        trace!("executor called: {:?}", sub);
         let tar = self.pool.spawn_fn(move || build_tar(sub));
         let client = self.docker.clone();
         let client2 = client.clone();
@@ -114,26 +118,29 @@ impl<C: Connect> Service for Executor<C> {
         let logs = image.and_then(move |messages| {
             messages
                 .map_err(|e| ExecutionError::DockerError(DockerError::HyperError(e)))
-                .fold(Transform::Empty, |last_step, mut msg| match msg {
-                    Message::Stream { ref mut stream } if stream.starts_with("sha256") => {
-                        let id = stream.split(":").skip(1).next().unwrap().to_owned();
-                        future::ok(Transform::Id(id))
-                    }
-                    Message::Stream { ref mut stream } if stream.contains("Step") => {
-                        match last_step {
+                .fold(Transform::Empty, |last_step, mut msg| {
+                    debug!("build message: {:?}", msg);
+                    match msg {
+                        Message::Stream { ref mut stream } if stream.starts_with("sha256") => {
+                            let id = stream.split(":").skip(1).next().unwrap().to_owned();
+                            future::ok(Transform::Id(id))
+                        }
+                        Message::Stream { ref mut stream } if stream.contains("Step") => {
+                            match last_step {
+                                Transform::Id(msg) => future::ok(Transform::Id(msg)),
+                                _ => future::ok(Transform::Empty),
+                            }
+                        }
+                        Message::Stream { mut stream } => match last_step {
                             Transform::Id(msg) => future::ok(Transform::Id(msg)),
-                            _ => future::ok(Transform::Empty),
-                        }
+                            Transform::Empty => future::ok(Transform::Error(stream)),
+                            Transform::Error(msg) => {
+                                stream.push_str(&msg);
+                                future::ok(Transform::Error(msg))
+                            }
+                        },
+                        Message::ErrorDetail { .. } => future::ok(last_step),
                     }
-                    Message::Stream { mut stream } => match last_step {
-                        Transform::Id(msg) => future::ok(Transform::Id(msg)),
-                        Transform::Empty => future::ok(Transform::Error(stream)),
-                        Transform::Error(msg) => {
-                            stream.push_str(&msg);
-                            future::ok(Transform::Error(msg))
-                        }
-                    },
-                    Message::ErrorDetail { .. } => future::ok(last_step),
                 })
                 .and_then(|msg| match msg {
                     Transform::Error(msg) => future::err(ExecutionError::CompileError(msg)),
@@ -141,6 +148,7 @@ impl<C: Connect> Service for Executor<C> {
                     Transform::Id(id) => future::ok(id),
                 })
                 .and_then(move |id| {
+                    trace!("building container from: {}", id);
                     let config = json!({
                         "NetworkDisabled": true,
                         "Image": id
@@ -155,13 +163,20 @@ impl<C: Connect> Service for Executor<C> {
                 .and_then(move |(client, id)| {
                     client
                         .start_container(&id)
-                        .map_err(|_| ExecutionError::UnknownError)
+                        .map_err(|e| {
+                            trace!("cant start container: {:?}", e);
+                            ExecutionError::UnknownError
+                        })
                         .and_then(|_| Ok((client, id)))
                 })
                 .and_then(|(client, id)| {
+                    trace!("getting logs from container: {}", id);
                     client
                         .logs(&id)
-                        .map_err(|_| ExecutionError::UnknownError)
+                        .map_err(|e| {
+                            trace!("logs error: {:?}", e);
+                            ExecutionError::UnknownError
+                        })
                         .and_then(|logs| {
                             logs.map_err(|_| ExecutionError::UnknownError)
                                 .fold(
@@ -185,7 +200,7 @@ impl<C: Connect> Service for Executor<C> {
                 .then(|result| match result {
                     Ok(output) => future::ok(output),
                     Err(ExecutionError::CompileError(msg)) => future::ok(Output::CompileError(msg)),
-                    Err(e) => future::err(e),
+                    Err(e) => future::err(e)
                 })
         });
         Box::new(logs)
@@ -232,11 +247,12 @@ where
     fn call(&self, req: Self::Request) -> Self::Future {
         match (req.method(), req.path()) {
             (&Method::Post, "/execute") => {
+                trace!("execute request");
                 let executor = self.executor.clone();
                 let response = req.body()
                     .fold(Vec::new(), |mut body, chunk| {
                         body.extend(chunk.into_iter());
-                        Ok::<_, hyper::Error>(body)
+                        future::ok::<_, hyper::Error>(body)
                     })
                     .map_err(|_| APIError::HyperError)
                     .and_then(|json| match json::from_slice::<Submission>(&json) {
@@ -248,8 +264,10 @@ where
                             .call(sub)
                             .map_err(|_| APIError::ExecutionError)
                             .and_then(|resp| {
-                                Ok(Response::new()
-                                    .with_body(Body::from(json::to_string(&resp).unwrap())))
+                                future::ok(
+                                    Response::new()
+                                        .with_body(Body::from(json::to_string(&resp).unwrap())),
+                                )
                             })
                     })
                     .then(|result| {
@@ -260,7 +278,7 @@ where
                                 .with_status(StatusCode::BadRequest),
                             _ => Response::new().with_body(Body::from("Unknown error")),
                         };
-                        Ok(response)
+                        future::ok(response)
                     });
                 Box::new(response)
             }
@@ -274,6 +292,7 @@ where
 }
 
 fn main() {
+    env_logger::init();
     let mut core = Core::new().unwrap();
     let handle = &core.handle();
     let addr = "127.0.0.1:3000".parse().unwrap();
