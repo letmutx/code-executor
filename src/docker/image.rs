@@ -32,8 +32,7 @@ pub enum Message {
         stream: String,
     },
     ErrorDetail {
-        #[serde(rename = "errorDetail")]
-        error_detail: Detail,
+        #[serde(rename = "errorDetail")] error_detail: Detail,
         error: String,
     },
 }
