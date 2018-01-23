@@ -5,27 +5,28 @@ use bytes::{BigEndian, ByteOrder};
 use docker::DockerError;
 
 use futures::{Async, Poll, Stream};
+use futures::stream::Fuse;
 
 pub struct Logs {
-    body: Body,
-    finished: bool,
+    body: Fuse<Body>,
     state: State,
     buf: BytesMut,
 }
 
+#[derive(Debug)]
 enum State {
     Head,
     Body(Header),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 enum LogType {
     Stdout,
     Stdin,
     Stderr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct Header {
     pub log_type: LogType,
     pub size: u32,
@@ -50,54 +51,9 @@ impl Header {
 impl Logs {
     pub fn new(body: Body) -> Self {
         Logs {
-            body: body,
-            finished: false,
+            body: body.fuse(),
             state: State::Head,
             buf: BytesMut::with_capacity(64),
-        }
-    }
-
-    fn can_read_head(&self) -> bool {
-        let can = match self.state {
-            State::Head if self.buf.len() >= 8 => true,
-            _ => false,
-        };
-
-        trace!("can_read_head: {}", can);
-        can
-    }
-
-    fn read_head(&mut self) -> Option<Header> {
-        match self.state {
-            State::Head => {
-                let buf = self.buf.split_to(8);
-                Some(Header::new(&buf))
-            }
-            _ => None,
-        }
-    }
-
-    fn can_read_body(&self) -> bool {
-        let can = match self.state {
-            State::Body(Header { size, .. }) if self.buf.len() >= size as usize => true,
-            _ => false,
-        };
-        trace!("can_read_body: {}", can);
-        can
-    }
-
-    fn read_body(&mut self) -> Option<Message> {
-        match self.state {
-            State::Body(Header { ref log_type, size }) => {
-                let bytes = self.buf.split_to(size as usize);
-                let body = String::from_utf8(bytes.to_vec()).expect("bad vec");
-                Some(match log_type {
-                    &LogType::Stdin => Message::Stdin(body),
-                    &LogType::Stdout => Message::Stdout(body),
-                    &LogType::Stderr => Message::Stderr(body),
-                })
-            }
-            State::Head => unreachable!(),
         }
     }
 }
@@ -114,56 +70,55 @@ impl Stream for Logs {
     type Error = DockerError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        if self.finished {
-            println!("body empty, finished");
-            trace!("buf len: {}", self.buf.len());
-            if self.buf.is_empty() {
-                return Ok(Async::Ready(None));
-            }
-            if self.can_read_head() {
-                let head = self.read_head().expect("can't read head");
-                self.state = State::Body(head);
-            }
-            if self.can_read_body() {
-                let body = self.read_body().expect("bad body");
-                return Ok(Async::Ready(Some(body)));
-            }
-            return Ok(Async::Ready(None));
-        }
+        loop {
+            trace!("state: {:?}", self.state);
 
-        match self.body.poll() {
-            Ok(Async::Ready(Some(chunk))) => {
-                self.buf.extend(&*chunk);
-                debug!("logs buf: {:?}", self.buf);
+            let mut finished = false;
+            let mut not_ready = false;
+            match self.body.poll() {
+                Ok(Async::NotReady) => not_ready = true,
+                Ok(Async::Ready(Some(chunk))) => {
+                    self.buf.extend(chunk);
+                }
+                Ok(Async::Ready(None)) => finished = true,
+                Err(_) => return Err(DockerError::UnknownError),
             }
-            Err(_) => return Err(DockerError::UnknownError),
-            Ok(Async::Ready(None)) => {
-                trace!("body empty");
-                self.finished = true;
-                debug!("self.finished: {}", self.finished);
+
+            trace!("buf len: {}, finished: {}", self.buf.len(), finished);
+            match self.state {
+                State::Head => {
+                    if finished {
+                        debug_assert!(self.buf.is_empty());
+                        return Ok(Async::Ready(None));
+                    }
+                    if not_ready {
+                        return Ok(Async::NotReady);
+                    }
+                    if self.buf.len() < 8 {
+                        continue;
+                    }
+                    let buf = self.buf.split_to(8);
+                    let header = Header::new(&buf);
+                    self.state = State::Body(header);
+                }
+                State::Body(Header { log_type, size }) => {
+                    if self.buf.len() >= size as usize {
+                        let bytes = self.buf.split_to(size as usize);
+                        // TODO: not necessarily valid string
+                        let string = String::from_utf8(bytes.to_vec()).expect("Bad bytes");
+                        let message = match log_type {
+                            LogType::Stdout => Message::Stdout(string),
+                            LogType::Stdin => Message::Stdin(string),
+                            LogType::Stderr => Message::Stderr(string),
+                        };
+                        self.state = State::Head;
+                        return Ok(Async::Ready(Some(message)));
+                    }
+                    if not_ready {
+                        return Ok(Async::NotReady);
+                    }
+                }
             }
-            Ok(Async::NotReady) => {
-                trace!("body not ready");
-                ()
-            }
-        }
-
-        if self.can_read_head() {
-            let head = self.read_head().expect("bad head");
-            trace!("head: {:?}", head);
-            self.state = State::Body(head);
-        }
-
-        if self.can_read_body() {
-            let body = self.read_body().expect("bad body");
-            trace!("body: {:?}", body);
-            return Ok(Async::Ready(Some(body)));
-        }
-
-        if self.finished && self.buf.is_empty() {
-            Ok(Async::Ready(None))
-        } else {
-            Ok(Async::NotReady)
         }
     }
 }
