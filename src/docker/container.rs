@@ -92,23 +92,25 @@ impl ContainerBuilder {
                     body.extend(&*chunk);
                     Ok(body)
                 })
-                .and_then(move |body| match json::from_slice(&body) {
-                    Ok(json::Value::Object(map)) => match status {
-                        StatusCode::Created => future::ok(
-                            map.get("Id")
-                                .expect("expected id")
-                                .as_str()
-                                .unwrap()
-                                .to_owned(),
-                        ),
-                        StatusCode::NotAcceptable => future::err(DockerError::CantAttach),
-                        StatusCode::NotFound | StatusCode::BadRequest => {
-                            println!("container request body: {:?}", body);
-                            future::err(DockerError::BadRequest)
-                        }
-                        _ => future::err(DockerError::InternalServerError),
-                    },
-                    _ => future::err(DockerError::UnknownError),
+                .and_then(move |body| {
+                    debug!("container request body: {:?}, status: {}", body, status);
+                    match json::from_slice(&body) {
+                        Ok(json::Value::Object(map)) => match status {
+                            StatusCode::Created => future::ok(
+                                map.get("Id")
+                                    .expect("expected id")
+                                    .as_str()
+                                    .unwrap()
+                                    .to_owned(),
+                            ),
+                            StatusCode::NotAcceptable => future::err(DockerError::CantAttach),
+                            StatusCode::NotFound | StatusCode::BadRequest => {
+                                future::err(DockerError::BadRequest)
+                            }
+                            _ => future::err(DockerError::InternalServerError),
+                        },
+                        _ => future::err(DockerError::UnknownError),
+                    }
                 })
         });
         Box::new(response)
