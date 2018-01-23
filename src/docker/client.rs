@@ -65,7 +65,6 @@ impl<C: Connect> Docker<C> {
             ConnectionOption::ConnectionHeader(Ascii::new("upgrade".to_owned())),
         ]);
         request.headers_mut().set(upgrade);
-        println!("request: {}", *request.headers_mut());
         let response = self.request(request).and_then(|resp| {
             trace!("logs status: {}", resp.status());
             match resp.status() {
