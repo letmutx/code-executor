@@ -174,7 +174,20 @@ impl<C: Connect> Service for Executor<C> {
                     trace!("building container from: {}", id);
                     let config = json!({
                         "NetworkDisabled": true,
-                        "Image": id
+                        "Image": id,
+                        "HostConfig": {
+                            "CpusetCpus": "2-3",
+                            "PidsLimit": 1024,
+                            "Ulimits": [{
+                                "Name": "cpu",
+                                "Hard": 1,
+                                "Soft": 1
+                             }],
+                             "AutoRemove": true,
+                             "Memory": 1073741824usize,
+                             "MemorySwap": 1073741824usize,
+                             "DiskQuota": 10737418240usize
+                         }
                     });
                     ContainerBuilder::new()
                         .with_body(config.as_object().unwrap().clone())
