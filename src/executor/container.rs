@@ -8,8 +8,8 @@ use hyper::header::{Header, Headers};
 use futures::{future, Future};
 use futures::Stream;
 
-use docker::error::DockerError;
-use docker::client::Docker;
+use executor::error::DockerError;
+use executor::client::Docker;
 use hyper::client::Connect;
 use hyper::StatusCode;
 

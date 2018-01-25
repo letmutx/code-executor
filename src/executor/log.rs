@@ -2,7 +2,7 @@ use hyper::Body;
 use bytes::BytesMut;
 use bytes::{BigEndian, ByteOrder};
 
-use docker::DockerError;
+use executor::DockerError;
 
 use futures::{Async, Poll, Stream};
 use futures::stream::Fuse;

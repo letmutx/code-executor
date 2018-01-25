@@ -3,8 +3,8 @@ use hyper::{self, Method, StatusCode};
 use hyper::Client;
 use hyper::client::{Connect, Request};
 use tokio_core::reactor::Handle;
-use docker::log::Logs;
-use docker::error::DockerError;
+use executor::log::Logs;
+use executor::error::DockerError;
 use hyper::header::{Connection, ConnectionOption};
 use unicase::Ascii;
 

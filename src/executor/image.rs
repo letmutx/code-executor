@@ -10,8 +10,8 @@ use bytes::BytesMut;
 use futures::future;
 use std::collections::HashMap;
 
-use docker::client::Docker;
-use docker::error::DockerError;
+use executor::client::Docker;
+use executor::error::DockerError;
 
 pub struct BuildMessages {
     body: hyper::Body,
@@ -200,8 +200,8 @@ where
 mod tests {
     use tokio_core::reactor::Core;
     use hyperlocal::UnixConnector;
-    use docker::image::ImageBuilder;
-    use docker::container::ContainerBuilder;
+    use executor::image::ImageBuilder;
+    use executor::container::ContainerBuilder;
     use hyper::header::ContentType;
     use std::fs::{self, File};
     use futures::{self, Future, Stream};
@@ -209,7 +209,7 @@ mod tests {
     use tar::{Builder, Header};
     use json;
     use hyper;
-    use docker::container::Containers;
+    use executor::container::Containers;
 
     fn get_client(handle: &Handle) -> (Core, Docker<UnixConnector>) {
         let core = Core::new();
