@@ -122,25 +122,3 @@ impl Stream for Logs {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Header, LogType, Logs, Logs};
-    use hyper::{Body, Chunk};
-    use tokio_core::reactor::Core;
-    use futures::Stream;
-    use std::cmp::PartialEq;
-
-    #[test]
-    fn test_header_from_bytes() {
-        let bytes = [1u8, 0, 0, 0, 0, 0, 2, 1];
-        let header = Header::new(&bytes);
-        assert_eq!(header.log_type, LogType::Stdout);
-        assert_eq!(header.size, 0x0201);
-    }
-
-    #[test]
-    fn test_message_create() {
-        // TODO complete test
-    }
-}
