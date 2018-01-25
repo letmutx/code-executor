@@ -1,0 +1,4 @@
+{
+	"code": "#include <stdio.h>\nint main(void) { printf(\"Hello world\"); return 0; }",
+	"lang": "C"
+}
