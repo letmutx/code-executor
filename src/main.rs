@@ -42,6 +42,7 @@ pub struct Submission {
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 enum Language {
     C,
+    Python2,
 }
 
 type Stdout = String;

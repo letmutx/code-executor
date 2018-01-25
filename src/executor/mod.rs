@@ -49,12 +49,14 @@ impl LanguageConfig for Language {
     fn get_file_name(&self) -> &'static str {
         match *self {
             Language::C => "code.c",
+            Language::Python2 => "code.py",
         }
     }
 
     fn get_docker_file(&self) -> &'static str {
         match *self {
             Language::C => "resources/c/Dockerfile",
+            Language::Python2 => "resources/python2/Dockerfile",
         }
     }
 }
