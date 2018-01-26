@@ -1,4 +1,4 @@
 {
 	"code": "print 'hello world'",
-	"lang": "Python2"
+	"lang": "python2.7"
 }

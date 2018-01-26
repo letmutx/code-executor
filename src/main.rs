@@ -43,8 +43,10 @@ pub struct Submission {
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 enum Language {
+    #[serde(rename = "c")]
     C,
-    Python2,
+    #[serde(rename = "python2.7")]
+    Python27,
 }
 
 type Stdout = String;
