@@ -12,6 +12,6 @@ You might have to pull images required, see Dockerfile
 2. Install [docker](https://get.docker.com)
 3. Do `cargo run`
 
-You can use cURL. See sample json in `resources/<lang>/*.json*`
+You can use cURL. See sample json in `resources/<lang>/*.json`
 
 `$ curl -v 'https://localhost:3000/execute' --data @file`
