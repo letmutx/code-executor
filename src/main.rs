@@ -27,8 +27,10 @@ use hyper::{Body, Method, StatusCode};
 use futures::{future, Future};
 use futures::Stream;
 
+use std::rc::Rc;
+use std::clone::Clone;
+
 use tokio_core::reactor::Core;
-use tokio_core::net::TcpListener;
 
 use executor::Executor;
 use executor::ExecutionError;
@@ -54,13 +56,14 @@ pub enum Output {
     #[serde(rename = "output")] Output { stdout: Stdout, stderr: Stderr },
 }
 
+#[derive(Clone)]
 struct APIService<E> {
-    executor: E,
+    executor: Rc<E>,
 }
 
 impl<E> APIService<E> {
     fn new(executor: E) -> Self {
-        APIService { executor: executor }
+        APIService { executor: Rc::new(executor) }
     }
 }
 
@@ -73,7 +76,7 @@ enum APIError {
 
 impl<E> Service for APIService<E>
 where
-    E: Clone + Service<Request = Submission, Response = Output, Error = ExecutionError> + 'static,
+    E: Service<Request = Submission, Response = Output, Error = ExecutionError> + 'static,
 {
     type Request = hyper::server::Request;
     type Response = hyper::server::Response;
@@ -138,14 +141,17 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = &core.handle();
     let addr = "127.0.0.1:3000".parse().unwrap();
-    let listener = TcpListener::bind(&addr, handle).unwrap();
     let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
-    let service = listener.incoming().for_each(move |(socket, addr)| {
-        let api_service = APIService::new(executor.clone());
-        // TODO: move away from proto
-        #[allow(deprecated)]
-        let _ = Http::new().bind_connection(handle, socket, addr, api_service);
-        Ok(())
-    });
-    core.run(service).unwrap();
+    let api_service = APIService::new(executor);
+    let handle2 = handle.clone();
+    let server = Http::new().serve_addr_handle(&addr, handle, || Ok(api_service.clone()))
+            .expect("can't start serve")
+            .for_each(move |conn| {
+                let handle = &handle2;
+                handle.spawn(conn.map(|_| ()).map_err(|e| {
+                    debug!("conn error: {:?}", e);
+                }));
+                Ok(())
+            }).map_err(|e| debug!("error: {:?}", e));
+    core.run(server).unwrap();
 }
