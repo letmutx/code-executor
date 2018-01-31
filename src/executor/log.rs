@@ -88,8 +88,18 @@ impl Stream for Logs {
             match self.state {
                 State::Head => {
                     if finished {
-                        debug_assert!(self.buf.is_empty());
-                        return Ok(Async::Ready(None));
+                        let len = self.buf.len();
+                        if len == 0 {
+                            return Ok(Async::Ready(None));
+                        } else if len > 8 {
+                            let buf = self.buf.split_to(8);
+                            let header = Header::new(&buf);
+                            self.state = State::Body(header);
+                            continue;
+                        } else {
+                            debug!("self.buf {:?}", self.buf);
+                            return Err(DockerError::UnknownError);
+                        }
                     }
                     if not_ready {
                         return Ok(Async::NotReady);
