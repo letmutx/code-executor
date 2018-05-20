@@ -2,7 +2,7 @@
 
 Code executor in Rust using docker
 
-There are ~~lot of bugs, I know. I will (hopefully) fix them someday~~. Feel free to do whatever with it.
+~~There are lot of bugs, I know. I will (hopefully) fix them someday~~. I did fix most and it is usable. Feel free to do whatever with it.
 
 ## Steps to run
 

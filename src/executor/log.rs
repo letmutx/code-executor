@@ -1,11 +1,11 @@
-use hyper::Body;
 use bytes::BytesMut;
 use bytes::{BigEndian, ByteOrder};
+use hyper::Body;
 
 use executor::DockerError;
 
-use futures::{Async, Poll, Stream};
 use futures::stream::Fuse;
+use futures::{Async, Poll, Stream};
 
 pub struct Logs {
     body: Fuse<Body>,
@@ -26,6 +26,7 @@ enum LogType {
     Stderr,
 }
 
+/// Header of the log frame
 #[derive(Debug, Copy, Clone)]
 struct Header {
     pub log_type: LogType,
@@ -33,6 +34,9 @@ struct Header {
 }
 
 impl Header {
+    /// Create a header
+    /// # Arguments:
+    /// * `bytes` - Should be atleast 8 bytes long
     fn new(bytes: &[u8]) -> Header {
         let log_type = match bytes[0] {
             0u8 => LogType::Stdin,
@@ -49,6 +53,7 @@ impl Header {
 }
 
 impl Logs {
+    /// Create a new `Logs` instance from a body
     pub fn new(body: Body) -> Self {
         Logs {
             body: body.fuse(),
@@ -58,6 +63,7 @@ impl Logs {
     }
 }
 
+/// Body of the log frame
 #[derive(Debug)]
 pub enum Message {
     Stdout(String),
@@ -69,6 +75,11 @@ impl Stream for Logs {
     type Item = Message;
     type Error = DockerError;
 
+    /// The inner stream has frames with an 8-byte header
+    /// The first byte of the header denotes the type of the body
+    /// The next three bytes are unused, the remaining four bytes
+    /// encoded in big-endian format consist of a u32 which is the
+    /// size of the body
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
             trace!("state: {:?}", self.state);
@@ -114,7 +125,7 @@ impl Stream for Logs {
                 State::Body(Header { log_type, size }) => {
                     if self.buf.len() >= size as usize {
                         let bytes = self.buf.split_to(size as usize);
-                        // TODO: not necessarily valid string
+                        // FIXME: not necessarily valid string
                         let string = String::from_utf8(bytes.to_vec()).expect("Bad bytes");
                         let message = match log_type {
                             LogType::Stdout => Message::Stdout(string),

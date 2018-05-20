@@ -19,28 +19,30 @@ extern crate url;
 mod executor;
 
 use hyper::server::Http;
-use hyper::server::Service;
 use hyper::server::Response;
-use hyperlocal::UnixConnector;
+use hyper::server::Service;
 use hyper::{Body, Method, StatusCode};
+use hyperlocal::UnixConnector;
 
-use futures::{future, Future};
 use futures::Stream;
+use futures::{future, Future};
 
-use std::rc::Rc;
 use std::clone::Clone;
+use std::rc::Rc;
 
 use tokio_core::reactor::Core;
 
-use executor::Executor;
 use executor::ExecutionError;
+use executor::Executor;
 
+/// The input JSON format for the /execute endpoint
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Submission {
     code: String,
     lang: Language,
 }
 
+/// The languages supported
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 enum Language {
     #[serde(rename = "c")]
@@ -52,20 +54,27 @@ enum Language {
 type Stdout = String;
 type Stderr = String;
 
+/// The output of submission
 #[derive(Serialize)]
 pub enum Output {
-    #[serde(rename = "compile_error")] CompileError { error: String },
-    #[serde(rename = "output")] Output { stdout: Stdout, stderr: Stderr },
+    #[serde(rename = "compile_error")]
+    CompileError { error: String },
+    #[serde(rename = "output")]
+    Output { stdout: Stdout, stderr: Stderr },
 }
 
+/// The APIService which manages the REST API endpoints
 #[derive(Clone)]
 struct APIService<E> {
     executor: Rc<E>,
 }
 
 impl<E> APIService<E> {
+    /// Creates a new instance of the API server using the `executor`
     fn new(executor: E) -> Self {
-        APIService { executor: Rc::new(executor) }
+        APIService {
+            executor: Rc::new(executor),
+        }
     }
 }
 
@@ -92,6 +101,7 @@ where
                 let executor = self.executor.clone();
                 let response = req.body()
                     .fold(Vec::new(), |mut body, chunk| {
+                        // FIXME: huge body and out we go!
                         body.extend(chunk.into_iter());
                         future::ok::<_, hyper::Error>(body)
                     })
@@ -111,10 +121,9 @@ where
                                 APIError::ExecutionError
                             })
                             .and_then(|resp| {
-                                future::ok(
-                                    Response::new()
-                                        .with_body(Body::from(json::to_string(&resp).expect("can't error"))),
-                                )
+                                future::ok(Response::new().with_body(Body::from(
+                                    json::to_string(&resp).expect("can't error"),
+                                )))
                             })
                     })
                     .then(|result| {
@@ -146,14 +155,16 @@ fn main() {
     let executor = Executor::new(UnixConnector::new(handle.clone()), handle.clone());
     let api_service = APIService::new(executor);
     let handle2 = handle.clone();
-    let server = Http::new().serve_addr_handle(&addr, handle, || Ok(api_service.clone()))
-            .expect("can't start serve")
-            .for_each(move |conn| {
-                let handle = &handle2;
-                handle.spawn(conn.map(|_| ()).map_err(|e| {
-                    debug!("conn error: {:?}", e);
-                }));
-                Ok(())
-            }).map_err(|e| debug!("error: {:?}", e));
+    let server = Http::new()
+        .serve_addr_handle(&addr, handle, || Ok(api_service.clone()))
+        .expect("can't start serve")
+        .for_each(move |conn| {
+            let handle = &handle2;
+            handle.spawn(conn.map(|_| ()).map_err(|e| {
+                debug!("conn error: {:?}", e);
+            }));
+            Ok(())
+        })
+        .map_err(|e| debug!("error: {:?}", e));
     core.run(server).unwrap();
 }

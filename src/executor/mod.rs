@@ -1,15 +1,15 @@
-mod error;
 mod client;
 mod container;
+mod error;
 mod image;
 mod log;
 
-use self::error::DockerError;
 use self::client::Docker;
-use self::image::{ImageBuilder, Message};
 use self::container::ContainerBuilder;
-use hyper::header::ContentType;
+use self::error::DockerError;
+use self::image::{ImageBuilder, Message};
 use hyper::client::Connect;
+use hyper::header::ContentType;
 use hyper::server::Service;
 use tokio_core::reactor::Handle;
 
@@ -17,9 +17,9 @@ use futures::{Future, Stream};
 
 use tar::{Builder, Header};
 
+use Language;
 use Output;
 use Submission;
-use Language;
 
 use cpupool::CpuPool;
 use futures::future;
@@ -28,6 +28,7 @@ use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
 
+/// Builds a tar with files necessary for building a docker image for submission
 fn build_tar(sub: Submission) -> Result<Vec<u8>, ::std::io::Error> {
     let mut builder = Builder::new(Vec::new());
     let mut dockerfile = File::open(sub.lang.get_docker_file())?;
@@ -41,7 +42,9 @@ fn build_tar(sub: Submission) -> Result<Vec<u8>, ::std::io::Error> {
 }
 
 trait LanguageConfig {
+    /// Should the filename where the code is to be saved
     fn get_file_name(&self) -> &'static str;
+    /// Should return the docker file to be used for this container
     fn get_docker_file(&self) -> &'static str;
 }
 
@@ -63,19 +66,29 @@ impl LanguageConfig for Language {
 
 #[derive(Debug)]
 pub enum ExecutionError {
+    /// Error building a tar for build step
     BadConfig,
+    /// Error communicating with the Docker client
     DockerError(DockerError),
+    /// Holds the Compilation error message
     CompileError(String),
     UnknownError,
 }
 
+/// Executor implementation which uses the Docker backend
 #[derive(Clone)]
 pub struct Executor<C> {
+    /// Singleton Docker client instance
     docker: Rc<Docker<C>>,
+    /// Thread pool used for doing blocking operations
     pool: CpuPool,
 }
 
 impl<C: Connect> Executor<C> {
+    /// Create a new Executor
+    /// # Arguments
+    /// * `connector` - Provides connection to where Docker is running
+    /// * `handle` - A `Handle` to event loop on which this executor is to be run
     pub fn new(connector: C, handle: Handle) -> Self {
         Executor {
             docker: Rc::new(Docker::new(connector, handle)),
@@ -84,9 +97,14 @@ impl<C: Connect> Executor<C> {
     }
 }
 
+/// Intermediate structure used when trying
+/// to extract the image id out of build messages
 enum Transform {
+    /// The extracted id
     Id(String),
+    /// Holds the message where an unexpected error happened
     Error(String),
+    /// Initial State
     Empty,
 }
 
@@ -96,6 +114,12 @@ impl<C: Connect> Service for Executor<C> {
     type Error = ExecutionError;
     type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
+    /// The steps that we do for a single execution are
+    /// * Build a tar with the Dockerfile, code
+    /// * Build an `Image` from the tar, this also compiles the code
+    /// * Create a `Container` using the `Image` we build
+    /// * Start the `Container` to run the program
+    /// * Read the `Container` logs which contains the program output
     fn call(&self, sub: Self::Request) -> Self::Future {
         trace!("executor called: {:?}", sub);
         let tar = self.pool.spawn_fn(move || build_tar(sub));
@@ -116,6 +140,14 @@ impl<C: Connect> Service for Executor<C> {
                 })
         });
         let logs = image.and_then(move |messages| {
+            // This is a huge mess.
+            // We are trying to extract the Id of the Docker Image we built.
+            // The format of the docker response is not really suitable for
+            // parsing and I barely managed to do so.
+            //
+            // We also compile the code when we build the Docker Image, so
+            // compile errors are also extracted in that case. For interpreted
+            // languages errors are extracted when the container is actually run
             messages
                 .map_err(|e| {
                     debug!("error: {:?}", e);
@@ -216,6 +248,7 @@ impl<C: Connect> Service for Executor<C> {
                             }).fold(
                                     (String::from(""), String::from("")),
                                     |(mut stdout, mut stderr), msg| {
+                                        // FIXME: Huge outputs may cause out of memory
                                         match msg {
                                             log::Message::Stdout(msg) => {
                                                 stdout.push_str(&msg);

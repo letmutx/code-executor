@@ -1,17 +1,17 @@
-use std::collections::HashMap;
-use json::{self, Map};
 use hyperlocal::Uri;
+use json::{self, Map};
+use std::collections::HashMap;
 use url::form_urlencoded::Serializer as FormEncoder;
 
-use hyper::{self, Method, Request};
-use hyper::header::{Header, Headers};
-use futures::{future, Future};
 use futures::Stream;
+use futures::{future, Future};
+use hyper::header::{Header, Headers};
+use hyper::{self, Method, Request};
 
-use executor::error::DockerError;
 use executor::client::Docker;
-use hyper::client::Connect;
+use executor::error::DockerError;
 use hyper::StatusCode;
+use hyper::client::Connect;
 
 pub struct ContainerBuilder {
     params: HashMap<String, String>,

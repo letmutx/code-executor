@@ -1,11 +1,11 @@
-use hyperlocal::Uri;
-use hyper::{self, Method, StatusCode};
+use executor::error::DockerError;
+use executor::log::Logs;
 use hyper::Client;
 use hyper::client::{Connect, Request};
-use tokio_core::reactor::Handle;
-use executor::log::Logs;
-use executor::error::DockerError;
 use hyper::header::{Connection, ConnectionOption};
+use hyper::{self, Method, StatusCode};
+use hyperlocal::Uri;
+use tokio_core::reactor::Handle;
 use unicase::Ascii;
 
 use std::collections::HashMap;
@@ -13,6 +13,7 @@ use url::form_urlencoded::Serializer as FormEncoder;
 
 use futures::{future, Future};
 
+/// Docker Client
 pub struct Docker<C> {
     client: Client<C>,
 }
@@ -20,12 +21,16 @@ pub struct Docker<C> {
 type DockerResponse = Box<Future<Item = hyper::Response, Error = DockerError>>;
 
 impl<C: Connect> Docker<C> {
+    /// Creates a new Docker Client connected over the `connector`
+    /// It is tied to an event loop by the `Handle`
     pub fn new(connector: C, handle: Handle) -> Docker<C> {
         let client = Client::configure().connector(connector).build(&handle);
 
         Docker { client: client }
     }
 
+    /// Helper method for sending requests which don't
+    /// have any high level wrappers or builders
     pub fn request(&self, request: Request) -> DockerResponse {
         let response = self.client
             .request(request)
@@ -33,6 +38,7 @@ impl<C: Connect> Docker<C> {
         Box::new(response)
     }
 
+    /// Starts a container specified by the `id`
     pub fn start_container(&self, id: &str) -> Box<Future<Item = (), Error = DockerError>> {
         let uri = format!("v1.30/containers/{id}/start", id = id);
         let uri = Uri::new("/var/run/docker.sock", &uri);
@@ -48,6 +54,7 @@ impl<C: Connect> Docker<C> {
         Box::new(resp)
     }
 
+    /// Returns logs from the container specified by `container_id`
     pub fn logs(&self, container_id: &str) -> Box<Future<Item = Logs, Error = DockerError>> {
         let mut params = HashMap::new();
         params.insert("follow", "true");

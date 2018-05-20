@@ -1,11 +1,11 @@
+use bytes::BytesMut;
 use futures::{Async, Future, Poll, Stream};
-use hyper::{self, Method, Request, StatusCode};
-use hyper::header::{Header, Headers};
 use hyper::client::Connect;
+use hyper::header::{Header, Headers};
+use hyper::{self, Method, Request, StatusCode};
+use hyperlocal::Uri;
 use json::{self, Deserializer as JsonDeserializer};
 use url::form_urlencoded::Serializer as FormEncoder;
-use hyperlocal::Uri;
-use bytes::BytesMut;
 
 use futures::future;
 use std::collections::HashMap;
@@ -25,14 +25,17 @@ pub struct Detail {
     message: String,
 }
 
+/// Represents the types of messages that can be
+/// deserialized from the build messages stream
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum Message {
-    Stream {
-        stream: String,
-    },
+    /// Docker sends this type of message whenever an step completed
+    Stream { stream: String },
+    /// If an error is encountered at any step, this message is received
     ErrorDetail {
-        #[serde(rename = "errorDetail")] error_detail: Detail,
+        #[serde(rename = "errorDetail")]
+        error_detail: Detail,
         error: String,
     },
 }
@@ -46,6 +49,8 @@ impl BuildMessages {
         }
     }
 
+    /// Returns the next message from `buf` if it contains one
+    /// Also, removes the bytes used to construct the message from `buf`
     pub fn next_message(&mut self) -> Result<Option<Message>, json::Error> {
         let (next, byte_offset) = {
             let mut stream = JsonDeserializer::from_slice(&self.buf).into_iter::<Message>();
@@ -71,11 +76,14 @@ impl Stream for BuildMessages {
     type Item = Message;
     type Error = hyper::Error;
 
+    /// We are trying to read JSON Objects delimited by `\r\n`
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if self.finished {
+            // last line has been parsed, we're done
             if self.buf == r"\r\n" {
                 Ok(Async::Ready(None))
             } else {
+                // read the list of messages next
                 let next_message = self.next_message();
                 if let Ok(Some(value)) = next_message {
                     Ok(Async::Ready(Some(value)))
@@ -92,6 +100,7 @@ impl Stream for BuildMessages {
                     self.buf.extend(chunk);
                 }
                 Ok(Async::Ready(None)) => {
+                    // inner stream exhausted
                     self.finished = true;
                 }
                 Err(e) => return Err(e),
@@ -101,6 +110,7 @@ impl Stream for BuildMessages {
                 Ok(Async::Ready(Some(value)))
             } else {
                 // TODO: use task::notify() instead
+                // not enough bytes available for a complete message
                 if self.buf == "\r\n" {
                     Ok(Async::Ready(None))
                 } else {
@@ -111,6 +121,7 @@ impl Stream for BuildMessages {
     }
 }
 
+/// Builder for construction Docker Images
 pub struct ImageBuilder<T> {
     params: HashMap<String, String>,
     body: Option<T>,
@@ -121,6 +132,7 @@ impl<T> ImageBuilder<T>
 where
     T: Into<hyper::Body>,
 {
+    /// Instantiates an empty ImageBuilder
     pub fn new() -> Self {
         ImageBuilder {
             params: HashMap::new(),
@@ -129,34 +141,41 @@ where
         }
     }
 
+    /// Sets the query params to be sent to Docker
     pub fn set_param(&mut self, key: &str, value: &str) {
         self.params.insert(key.to_owned(), value.to_owned());
     }
 
+    /// Sets the Context to be sent to Docker for building an Image
     pub fn set_body(&mut self, body: T) {
         self.body = Some(body);
     }
 
+    /// Sets the HTTP headers to be sent to Docker
     pub fn set_header<H: Header>(&mut self, header: H) {
         self.headers.set(header);
     }
 
+    /// Sets the query params to be sent to Docker
     pub fn with_param(mut self, key: &str, value: &str) -> Self {
         self.set_param(key, value);
         self
     }
 
     #[allow(dead_code)]
+    /// Sets the HTTP headers to be sent to Docker
     pub fn with_header<H: Header>(mut self, header: H) -> Self {
         self.set_header(header);
         self
     }
 
+    /// Sets the Context to be sent to Docker for building an Image
     pub fn with_body(mut self, archive: T) -> Self {
         self.set_body(archive);
         self
     }
 
+    /// Builds a HTTP Request to be sent to Docker
     pub fn build(self) -> Result<Request, DockerError> {
         let params = FormEncoder::new(String::new())
             .extend_pairs(self.params)
